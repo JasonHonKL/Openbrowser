@@ -23,7 +23,7 @@ No Chromium binary. No Docker. No GPU. Just HTTP + HTML parsing.
 
 ## Demo
 
-[demo.mov](demo/demo.mov)
+[demo.mp4](demo/demo.mp4)
 
 ## Features
 
