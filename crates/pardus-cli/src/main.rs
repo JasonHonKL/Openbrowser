@@ -50,6 +50,10 @@ enum Commands {
         /// Verbose logging
         #[arg(short, long)]
         verbose: bool,
+
+        /// Capture and display network request table
+        #[arg(long)]
+        network_log: bool,
     },
 
     /// Start CDP WebSocket server for automation
@@ -105,6 +109,7 @@ async fn main() -> Result<()> {
             header: _,
             js,
             verbose,
+            network_log,
         } => {
             if verbose {
                 tracing_subscriber::fmt()
@@ -112,7 +117,7 @@ async fn main() -> Result<()> {
                     .init();
             }
 
-            commands::navigate::run(&url, format, interactive_only, with_nav, js, wait_ms).await?;
+            commands::navigate::run(&url, format, interactive_only, with_nav, js, wait_ms, network_log).await?;
         }
         Commands::Serve { host, port, timeout: _ } => {
             println!("CDP server not yet implemented — use 'navigate' mode for now");

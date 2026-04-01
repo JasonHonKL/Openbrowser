@@ -3,6 +3,7 @@ members = [
     "crates/pardus-core",
     "crates/pardus-cdp",
     "crates/pardus-cli",
+    "crates/pardus-debug",
 ]
 resolver = "2"
 

@@ -39,3 +39,6 @@ indexmap = "2"
 
 # JS execution
 deno_core = { workspace = true }
+
+# Network debugging
+pardus-debug = { path = "../pardus-debug" }

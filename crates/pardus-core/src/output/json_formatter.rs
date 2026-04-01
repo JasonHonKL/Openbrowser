@@ -1,5 +1,5 @@
-use crate::semantic::tree::SemanticTree;
 use crate::navigation::graph::NavigationGraph;
+use crate::semantic::tree::SemanticTree;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -10,6 +10,8 @@ pub struct JsonResult<'a> {
     pub stats: &'a crate::semantic::tree::TreeStats,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub navigation_graph: Option<&'a NavigationGraph>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_log: Option<&'a pardus_debug::formatter::NetworkLogJson>,
 }
 
 // Implement Serialize for SemanticTree and SemanticNode
@@ -68,6 +70,7 @@ pub fn format_json(
     title: Option<String>,
     tree: &SemanticTree,
     nav_graph: Option<&NavigationGraph>,
+    network_log: Option<&pardus_debug::formatter::NetworkLogJson>,
 ) -> anyhow::Result<String> {
     let result = JsonResult {
         url: url.to_string(),
@@ -75,6 +78,7 @@ pub fn format_json(
         semantic_tree: tree,
         stats: &tree.stats,
         navigation_graph: nav_graph,
+        network_log,
     };
     Ok(serde_json::to_string_pretty(&result)?)
 }

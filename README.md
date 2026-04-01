@@ -32,6 +32,7 @@ No Chromium binary. No Docker. No GPU. Just HTTP + HTML parsing.
 - **Navigation graph** — Internal routes, external links, form descriptors with fields
 - **Interactive-only mode** — Strip static content, show only actionable elements
 - **Action annotations** — Every interactive element tagged with `navigate`, `click`, `fill`, `toggle`, or `select`
+- **Network debugger** — DevTools-style request table with subresource discovery and parallel fetching
 - **Fast** — HTTP GET + HTML parse, typically under 200ms
 - **Zero dependencies on Chrome** — Pure Rust, no browser binary needed
 
@@ -77,6 +78,12 @@ pardus-browser navigate https://example.com --js --wait-ms 5000
 
 # Verbose logging
 pardus-browser navigate https://example.com -v
+
+# Capture and display network request table
+pardus-browser navigate https://example.com --network-log
+
+# Network log with JSON output
+pardus-browser navigate https://example.com --format json --network-log
 ```
 
 ### Output formats
@@ -134,9 +141,52 @@ Returns:
         ]
       }
     ]
+  },
+  "network_log": {
+    "total_requests": 4,
+    "total_bytes": 6432,
+    "total_time_ms": 312,
+    "failed": 0,
+    "requests": [
+      {
+        "id": 1, "method": "GET", "type": "document",
+        "initiator": "navigation", "description": "document · navigation",
+        "url": "https://example.com/", "status": 200,
+        "content_type": "text/html", "body_size": 4304, "timing_ms": 142
+      }
+    ]
   }
 }
 ```
+
+### Network debugger
+
+Capture and display all network requests in a DevTools-style table:
+
+```bash
+pardus-browser navigate https://example.com --network-log
+```
+
+```
+00:00  pardus-browser navigate https://example.com
+00:00  connected — parsing semantic state…
+       # Network — 4 requests — 4.6 KB — 312ms total
+
+         Method  Type        Resource                URL                                         Status  Size     Time
+         —       ——————       —————————                 —————————————————                               ——————   ————————   ——————
+         1       GET         document                 document · navigation                        200     4.2 KB   142ms
+         2       GET         stylesheet               stylesheet · css2                            200     128 B    45ms
+         3       GET         stylesheet               stylesheet · styles.css                      200     2.1 KB   89ms
+         4       GET         script                   script · script.js                           200     0 B      23ms
+00:00  semantic tree ready — 0 landmarks, 1 links, 1 headings, 1 actions
+00:00  agent-ready: structured state exposed · no pixel buffer · 0 screenshots
+```
+
+The network debugger:
+- Records the main page request (status, timing, size, headers)
+- Discovers all subresources from HTML (`<link>`, `<script>`, `<img>`, `<video>`, `<audio>`, `<iframe>`, `<embed>`, `<object>`, inline CSS `url()`)
+- Fetches all discovered subresources in parallel (concurrency limit of 6)
+- Includes `network_log` in JSON output when using `--format json --network-log`
 
 ### Clean cache
 
@@ -156,11 +206,14 @@ pardus-browser clean --cache-only
 ```
 pardus-browser
 ├── crates/pardus-core    Core library — HTML parsing, semantic tree, navigation graph
+├── crates/pardus-debug   Network debugger — request recording, subresource discovery, table output
 ├── crates/pardus-cdp     CDP WebSocket server (planned)
 └── crates/pardus-cli     CLI binary
 ```
 
 **pardus-core** — The engine. Fetches pages via `reqwest`, parses HTML with `scraper`, builds a semantic tree mapping ARIA roles and interactive states. Outputs Markdown, tree, or JSON.
+
+**pardus-debug** — Network debugging. Records all HTTP requests to a shared `NetworkLog`, discovers subresources from parsed HTML (stylesheets, scripts, images, fonts, media), fetches them in parallel, and formats DevTools-style request tables. Exposes `NetworkRecord`, `ResourceType`, `Initiator`, and `NetworkLog` types for use across crates.
 
 **pardus-cdp** — Chrome DevTools Protocol server (planned). Will expose a WebSocket endpoint for Playwright/Puppeteer integration, enabling JS-rendered pages and real-time interaction.
 
@@ -201,6 +254,7 @@ pardus-browser
 - [x] **Action annotations** — navigate, click, fill, toggle, select
 - [x] **Custom headers** — Pass authentication and custom headers
 - [x] **Cache management** — Clean cookies and cache
+- [x] **Network debugger** — Request table with subresource discovery and parallel fetching
 
 ### ⚠️ Experimental / Partial
 
@@ -221,7 +275,6 @@ pardus-browser
 
 ### 🚧 Planned
 
-- [ ] **Network Debugger** — Request table for agent debugging
 - [ ] **CDP WebSocket server** — Playwright/Puppeteer compatible API
 - [ ] **Page interaction** — Click, type, scroll, wait for selectors
 - [ ] **Session persistence** — Cookies, localStorage, auth flows

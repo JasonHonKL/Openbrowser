@@ -11,19 +11,19 @@ pub async fn run(
     with_nav: bool,
     js: bool,
     wait_ms: u32,
+    network_log: bool,
 ) -> Result<()> {
     let start = Instant::now();
 
-    // Fetch and parse the page
     println!(
         "{:02}:{:02}  pardus-browser navigate {}",
         0, 0, url
     );
 
-    let app = pardus_core::App::new(pardus_core::BrowserConfig::default());
+    let app = Arc::new(pardus_core::App::new(pardus_core::BrowserConfig::default()));
     let page = if js {
         println!("       JS execution enabled — executing scripts…");
-        match pardus_core::Page::from_url_with_js(&Arc::new(app), url, wait_ms).await {
+        match pardus_core::Page::from_url_with_js(&app, url, wait_ms).await {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error fetching {url}: {e}");
@@ -31,7 +31,7 @@ pub async fn run(
             }
         }
     } else {
-        match pardus_core::Page::from_url(&Arc::new(app), url).await {
+        match pardus_core::Page::from_url(&app, url).await {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Error fetching {url}: {e}");
@@ -47,10 +47,13 @@ pub async fn run(
         elapsed_connected, ms_connected
     );
 
-    // Build semantic tree
+    if network_log {
+        page.discover_subresources(&app.network_log);
+        pardus_core::Page::fetch_subresources(&app.http_client, &app.network_log).await;
+    }
+
     let tree = page.semantic_tree();
 
-    // Filter interactive-only if requested
     let tree = if interactive_only {
         filter_interactive(&tree)
     } else {
@@ -60,7 +63,6 @@ pub async fn run(
     let elapsed_parsed = start.elapsed().as_secs();
     let ms_parsed = start.elapsed().as_millis() % 1000 / 10;
 
-    // Output based on format
     match format {
         OutputFormatArg::Md => {
             let output = pardus_core::output::md_formatter::format_md(&tree);
@@ -84,18 +86,26 @@ pub async fn run(
             } else {
                 None
             };
+
+            let network = if network_log {
+                let log = app.network_log.lock().unwrap();
+                Some(pardus_debug::formatter::NetworkLogJson::from_log(&log))
+            } else {
+                None
+            };
+
             let json = pardus_core::output::json_formatter::format_json(
                 &page.url,
                 page.title(),
                 &tree,
                 nav_graph.as_ref(),
+                network.as_ref(),
             )?;
             println!("{}", json);
             return Ok(());
         }
     }
 
-    // Stats line
     println!(
         "{:02}:{:02}  semantic tree ready — {} landmarks, {} links, {} headings, {} actions",
         elapsed_parsed,
@@ -106,7 +116,16 @@ pub async fn run(
         tree.stats.actions,
     );
 
-    // Navigation graph
+    if network_log {
+        let log = app.network_log.lock().unwrap();
+        let table = pardus_debug::formatter::format_table_with_initiator(&log);
+        for line in table.lines() {
+            if !line.trim().is_empty() {
+                println!("       {}", line);
+            }
+        }
+    }
+
     if with_nav {
         let nav = page.navigation_graph();
         let elapsed_nav = start.elapsed().as_secs();
@@ -133,12 +152,10 @@ pub async fn run(
     Ok(())
 }
 
-/// Filter the semantic tree to only include interactive nodes.
 fn filter_interactive(tree: &pardus_core::SemanticTree) -> pardus_core::SemanticTree {
     use pardus_core::{SemanticNode, SemanticRole, TreeStats};
 
     fn filter_node(node: &SemanticNode) -> Option<SemanticNode> {
-        // Keep interactive nodes as-is (prune their non-interactive children)
         if node.is_interactive {
             let filtered_children: Vec<SemanticNode> = node
                 .children
@@ -151,8 +168,6 @@ fn filter_interactive(tree: &pardus_core::SemanticTree) -> pardus_core::Semantic
             });
         }
 
-        // Always recurse into children — keep this node only if it has
-        // interactive descendants or is a structural container (document/landmark)
         let filtered_children: Vec<SemanticNode> = node
             .children
             .iter()

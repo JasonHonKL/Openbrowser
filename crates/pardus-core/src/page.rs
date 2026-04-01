@@ -1,12 +1,14 @@
 use scraper::{Html, Selector};
 use std::sync::Arc;
+use std::time::Instant;
 use url::Url;
 
 use crate::app::App;
 use crate::semantic::tree::SemanticTree;
 use crate::navigation::graph::NavigationGraph;
 
-/// A parsed web page with its DOM and metadata.
+use pardus_debug::{NetworkRecord, ResourceType, Initiator};
+
 pub struct Page {
     pub url: String,
     pub status: u16,
@@ -16,8 +18,9 @@ pub struct Page {
 }
 
 impl Page {
-    /// Fetch a URL and parse it into a Page.
     pub async fn from_url(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
+        let start = Instant::now();
+
         let response = app.http_client.get(url).send().await?;
         let status = response.status().as_u16();
         let final_url = response.url().to_string();
@@ -26,11 +29,20 @@ impl Page {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
+
+        let resp_headers: Vec<(String, String)> = response
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
+            .collect();
+
         let body = response.text().await?;
+        let body_size = body.len();
+        let timing_ms = start.elapsed().as_millis();
+
+        record_main_request(app, url, &final_url, status, &content_type, body_size, timing_ms, &resp_headers);
 
         let html = Html::parse_document(&body);
-
-        // Resolve base URL from <base> tag or use final URL
         let base_url = Self::extract_base_url(&html, &final_url);
 
         Ok(Self {
@@ -42,8 +54,9 @@ impl Page {
         })
     }
 
-    /// Fetch a URL, execute JavaScript, and parse the resulting HTML.
     pub async fn from_url_with_js(app: &Arc<App>, url: &str, wait_ms: u32) -> anyhow::Result<Self> {
+        let start = Instant::now();
+
         let response = app.http_client.get(url).send().await?;
         let status = response.status().as_u16();
         let final_url = response.url().to_string();
@@ -52,9 +65,19 @@ impl Page {
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-        let body = response.text().await?;
 
-        // Execute JS
+        let resp_headers: Vec<(String, String)> = response
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
+            .collect();
+
+        let body = response.text().await?;
+        let body_size = body.len();
+        let timing_ms = start.elapsed().as_millis();
+
+        record_main_request(app, url, &final_url, status, &content_type, body_size, timing_ms, &resp_headers);
+
         let base_url = Self::extract_base_url(&Html::parse_document(&body), &final_url);
         let final_body = crate::js::execute_js(&body, &base_url, wait_ms).await?;
 
@@ -70,7 +93,6 @@ impl Page {
         })
     }
 
-    /// Parse an HTML string (useful for testing).
     pub fn from_html(html_str: &str, url: &str) -> Self {
         let html = Html::parse_document(html_str);
         let base_url = Self::extract_base_url(&html, url);
@@ -83,7 +105,6 @@ impl Page {
         }
     }
 
-    /// Extract the page title.
     pub fn title(&self) -> Option<String> {
         let selector = Selector::parse("title").ok()?;
         self.html
@@ -92,14 +113,37 @@ impl Page {
             .map(|el| el.text().collect::<String>().trim().to_string())
     }
 
-    /// Build the semantic tree from this page's DOM.
     pub fn semantic_tree(&self) -> SemanticTree {
         SemanticTree::build(&self.html, &self.base_url)
     }
 
-    /// Build the navigation graph from this page.
     pub fn navigation_graph(&self) -> NavigationGraph {
         NavigationGraph::build(&self.html, &self.url)
+    }
+
+    pub fn discover_subresources(&self, log: &Arc<std::sync::Mutex<pardus_debug::NetworkLog>>) {
+        let start_id = {
+            let log = log.lock().unwrap();
+            log.next_id()
+        };
+
+        let subresources = pardus_debug::discover::discover_subresources(
+            &self.html,
+            &self.base_url,
+            start_id,
+        );
+
+        let mut log = log.lock().unwrap();
+        for record in subresources {
+            log.push(record);
+        }
+    }
+
+    pub async fn fetch_subresources(
+        client: &reqwest::Client,
+        log: &Arc<std::sync::Mutex<pardus_debug::NetworkLog>>,
+    ) {
+        pardus_debug::fetch::fetch_subresources(client, log, 6).await;
     }
 
     fn extract_base_url(html: &Html, fallback: &str) -> String {
@@ -116,4 +160,57 @@ impl Page {
         }
         fallback.to_string()
     }
+}
+
+fn record_main_request(
+    app: &Arc<App>,
+    original_url: &str,
+    final_url: &str,
+    status: u16,
+    content_type: &Option<String>,
+    body_size: usize,
+    timing_ms: u128,
+    response_headers: &[(String, String)],
+) {
+    let mut record = NetworkRecord::fetched(
+        1,
+        "GET".to_string(),
+        ResourceType::Document,
+        "document · navigation".to_string(),
+        final_url.to_string(),
+        Initiator::Navigation,
+    );
+    record.status = Some(status);
+    record.status_text = Some(http_status_text(status));
+    record.content_type = content_type.clone();
+    record.body_size = Some(body_size);
+    record.timing_ms = Some(timing_ms);
+    record.response_headers = response_headers.to_vec();
+
+    if original_url != final_url {
+        record.redirect_url = Some(final_url.to_string());
+    }
+
+    let mut log = app.network_log.lock().unwrap();
+    log.push(record);
+}
+
+fn http_status_text(status: u16) -> String {
+    match status {
+        200 => "OK",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        _ => "",
+    }.to_string()
 }

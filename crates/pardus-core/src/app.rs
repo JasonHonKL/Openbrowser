@@ -1,10 +1,12 @@
-use std::sync::Arc;
 use crate::config::BrowserConfig;
+use pardus_debug::NetworkLog;
+use std::sync::Arc;
+use std::sync::Mutex;
 
-/// Shared application context passed through the browser session.
 pub struct App {
     pub http_client: reqwest::Client,
     pub config: BrowserConfig,
+    pub network_log: Arc<Mutex<NetworkLog>>,
 }
 
 impl App {
@@ -16,7 +18,11 @@ impl App {
             .build()
             .expect("failed to build HTTP client");
 
-        Self { http_client, config }
+        Self {
+            http_client,
+            config,
+            network_log: Arc::new(Mutex::new(NetworkLog::new())),
+        }
     }
 
     pub fn default() -> Arc<Self> {
