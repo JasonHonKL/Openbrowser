@@ -106,21 +106,77 @@ impl CdpDomainHandler for PardusDomain {
             "detectActions" => {
                 match get_page_data(ctx, target_id).await {
                     Some((html_str, url)) => {
-                        let page = pardus_core::Page::from_html(&html_str, &url);
-                        let elements = page.interactive_elements();
-                        let actions: Vec<Value> = elements.iter().map(|el| {
-                            serde_json::json!({
-                                "selector": el.selector,
-                                "tag": el.tag,
-                                "action": el.action,
-                                "label": el.label,
-                                "href": el.href,
-                                "disabled": el.is_disabled,
-                            })
-                        }).collect();
+                        let frame_tree_json = ctx.get_frame_tree_json(target_id).await;
+                        let page = if let Some(ft_json) = frame_tree_json {
+                            match serde_json::from_str::<pardus_core::FrameTree>(&ft_json) {
+                                Ok(ft) => pardus_core::Page::from_html_with_frame_tree(&html_str, &url, ft),
+                                Err(_) => pardus_core::Page::from_html(&html_str, &url),
+                            }
+                        } else {
+                            pardus_core::Page::from_html(&html_str, &url)
+                        };
+                        let tree = page.semantic_tree();
+                        let mut actions = Vec::new();
+                        collect_interactive_nodes(&tree.root, &mut actions);
                         HandleResult::Success(serde_json::json!({
                             "actions": actions
                         }))
+                    }
+                    None => HandleResult::Error(CdpErrorResponse {
+                        id: 0,
+                        error: crate::error::CdpErrorBody {
+                            code: SERVER_ERROR,
+                            message: "No active page".to_string(),
+                        },
+                        session_id: None,
+                    }),
+                }
+            }
+            "getActionPlan" => {
+                match get_page_data(ctx, target_id).await {
+                    Some((html_str, url)) => {
+                        let page = pardus_core::Page::from_html(&html_str, &url);
+                        let tree = page.semantic_tree();
+                        let nav = page.navigation_graph();
+                        let plan = pardus_core::interact::ActionPlan::analyze(&url, &tree, Some(&nav));
+                        let result = serde_json::to_value(&plan).unwrap_or(serde_json::json!({
+                            "error": "Failed to serialize action plan"
+                        }));
+                        HandleResult::Success(serde_json::json!({
+                            "actionPlan": result
+                        }))
+                    }
+                    None => HandleResult::Error(CdpErrorResponse {
+                        id: 0,
+                        error: crate::error::CdpErrorBody {
+                            code: SERVER_ERROR,
+                            message: "No active page".to_string(),
+                        },
+                        session_id: None,
+                    }),
+                }
+            }
+            "autoFill" => {
+                let fields = match params.get("fields") {
+                    Some(f) if f.is_object() => f.as_object().unwrap().clone(),
+                    _ => serde_json::Map::new(),
+                };
+
+                let mut values = pardus_core::interact::AutoFillValues::new();
+                for (key, val) in &fields {
+                    if let Some(v) = val.as_str() {
+                        values = values.set(key, v);
+                    }
+                }
+
+                match get_page_data(ctx, target_id).await {
+                    Some((html_str, url)) => {
+                        let page = pardus_core::Page::from_html(&html_str, &url);
+                        let result = pardus_core::interact::auto_fill::auto_fill(&values, &page);
+                        let json = serde_json::to_value(&result).unwrap_or(serde_json::json!({
+                            "error": "Failed to serialize auto-fill result"
+                        }));
+                        HandleResult::Success(json)
                     }
                     None => HandleResult::Error(CdpErrorResponse {
                         id: 0,
@@ -144,6 +200,78 @@ impl CdpDomainHandler for PardusDomain {
                         let result = serde_json::to_value(&report)
                             .unwrap_or(serde_json::json!({"error": "serialization failed"}));
                         HandleResult::Success(result)
+                    }
+                    None => HandleResult::Error(CdpErrorResponse {
+                        id: 0,
+                        error: crate::error::CdpErrorBody {
+                            code: SERVER_ERROR,
+                            message: "No active page".to_string(),
+                        },
+                        session_id: None,
+                    }),
+                }
+            }
+            "wait" => {
+                let condition_str = params["condition"].as_str().unwrap_or("");
+                let condition = match condition_str {
+                    "contentLoaded" => pardus_core::interact::WaitCondition::ContentLoaded,
+                    "contentStable" => pardus_core::interact::WaitCondition::ContentStable,
+                    "networkIdle" => pardus_core::interact::WaitCondition::NetworkIdle,
+                    "minInteractive" => {
+                        let min_count = params["minCount"].as_u64().unwrap_or(1) as usize;
+                        pardus_core::interact::WaitCondition::MinInteractiveElements(min_count)
+                    }
+                    "selector" => {
+                        let selector = params["selector"].as_str().unwrap_or("");
+                        pardus_core::interact::WaitCondition::Selector(selector.to_string())
+                    }
+                    _ => {
+                        return HandleResult::Error(CdpErrorResponse {
+                            id: 0,
+                            error: crate::error::CdpErrorBody {
+                                code: crate::error::INVALID_PARAMS,
+                                message: format!(
+                                    "Unknown wait condition '{}'. Expected: contentLoaded, contentStable, networkIdle, minInteractive, selector",
+                                    condition_str
+                                ),
+                            },
+                            session_id: None,
+                        });
+                    }
+                };
+
+                let timeout_ms = params["timeoutMs"].as_u64().unwrap_or(10000) as u32;
+                let interval_ms = params["intervalMs"].as_u64().unwrap_or(500) as u32;
+
+                match get_page_data(ctx, target_id).await {
+                    Some((html_str, url)) => {
+                        let page = pardus_core::Page::from_html(&html_str, &url);
+                        match pardus_core::interact::wait_smart(
+                            &ctx.app,
+                            &page,
+                            &condition,
+                            timeout_ms,
+                            interval_ms,
+                        ).await {
+                            Ok(result) => {
+                                let (satisfied, reason) = match result {
+                                    pardus_core::interact::InteractionResult::WaitSatisfied { selector, found } => {
+                                        (found, selector)
+                                    }
+                                    _ => (false, "unknown".to_string()),
+                                };
+                                HandleResult::Success(serde_json::json!({
+                                    "satisfied": satisfied,
+                                    "condition": condition_str,
+                                    "reason": reason,
+                                }))
+                            }
+                            Err(e) => HandleResult::Success(serde_json::json!({
+                                "satisfied": false,
+                                "condition": condition_str,
+                                "reason": format!("error: {}", e),
+                            })),
+                        }
                     }
                     None => HandleResult::Error(CdpErrorResponse {
                         id: 0,
@@ -229,5 +357,24 @@ async fn handle_interact(
             "success": false,
             "error": format!("Unknown action '{}'", action)
         }),
+    }
+}
+
+fn collect_interactive_nodes(node: &pardus_core::SemanticNode, out: &mut Vec<Value>) {
+    if node.is_interactive {
+        out.push(serde_json::json!({
+            "element_id": node.element_id,
+            "selector": node.selector,
+            "role": node.role.role_str(),
+            "tag": node.tag,
+            "name": node.name,
+            "action": node.action,
+            "href": node.href,
+            "input_type": node.input_type,
+            "disabled": node.is_disabled,
+        }));
+    }
+    for child in &node.children {
+        collect_interactive_nodes(child, out);
     }
 }

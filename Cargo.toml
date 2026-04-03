@@ -2,9 +2,12 @@
 members = [
     "crates/pardus-core",
     "crates/pardus-cdp",
+    "crates/pardus-challenge",
     "crates/pardus-cli",
     "crates/pardus-debug",
     "crates/pardus-kg",
+    "crates/pardus-server",
+    "crates/pardus-tauri/src-tauri",
 ]
 resolver = "2"
 
@@ -27,6 +30,8 @@ futures-util = "0.3"
 blake3 = "1"
 lol_html = "2"
 reqwest = { version = "0.12", features = ["cookies", "gzip", "brotli", "deflate", "json"] }
+rquest = { version = "5", features = ["cookies", "gzip", "brotli", "deflate", "json", "stream", "socks"] }
+rquest-util = "2"
 parking_lot = "0.12"
 base64 = "0.22"
 async-trait = "0.1"

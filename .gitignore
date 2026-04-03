@@ -2,6 +2,7 @@
 **/*.rs.bk
 Cargo.lock
 .DS_Store
+**/.DS_Store
 
 # Adapter build artifacts
 adapters/python/pardus-playwright/*.egg-info/
@@ -13,4 +14,24 @@ adapters/node/pardus-puppeteer/dist/
 adapters/node/pardus-playwright/node_modules/
 adapters/node/pardus-playwright/dist/
 
+# Tauri frontend
+crates/pardus-tauri/node_modules/
+crates/pardus-tauri/dist/
+
+# Web dashboard
+web/node_modules/
+web/dist/
+
+# AI agent
+ai-agent/pardus-browser/node_modules/
+ai-agent/pardus-browser/dist/
+
+# Lockfiles
+**/package-lock.json
+
 .env
+.env.*
+!.env.example
+
+# Research benchmark data
+research/

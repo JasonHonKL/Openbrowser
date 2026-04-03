@@ -6,11 +6,12 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use deno_core::*;
+use parking_lot::{Condvar, Mutex};
 use scraper::{Html, Selector};
 use url::Url;
 
@@ -166,62 +167,59 @@ fn execute_interaction_thread(
     user_agent: String,
     session: Option<Arc<SessionStore>>,
 ) -> Option<InteractionThreadResult> {
-    let result = Arc::new(Mutex::new(InteractionThreadResult {
+    let lock = Arc::new(Mutex::new(InteractionThreadResult {
         html: None,
         click_prevented: false,
         href: None,
         navigation_href: None,
         submit_prevented: None,
     }));
-    let result_clone = result.clone();
+    let cvar = Arc::new(Condvar::new());
 
-    let handle = thread::spawn(move || {
-        // Catch panics so we can report errors instead of silently failing
+    let lock_clone = lock.clone();
+    let cvar_clone = cvar.clone();
+
+    let _handle = thread::spawn(move || {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             execute_interaction_inner(
                 html, base_url, interaction_js, user_agent, session,
             )
         }));
 
-        match res {
-            Ok(Ok(output)) => {
-                *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = output;
-            }
+        let output = match res {
+            Ok(Ok(output)) => output,
             Ok(Err(e)) => {
                 eprintln!("[js_interact] Error: {:#}", e);
-                *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = InteractionThreadResult {
+                InteractionThreadResult {
                     html: None,
                     click_prevented: false,
                     href: None,
                     navigation_href: None,
                     submit_prevented: None,
-                };
+                }
             }
             Err(panic_val) => {
                 eprintln!("[js_interact] Thread panicked: {:?}", panic_val);
-                *result_clone.lock().unwrap_or_else(|e| e.into_inner()) = InteractionThreadResult {
+                InteractionThreadResult {
                     html: None,
                     click_prevented: false,
                     href: None,
                     navigation_href: None,
                     submit_prevented: None,
-                };
+                }
             }
-        }
+        };
+        *lock_clone.lock() = output;
+        cvar_clone.notify_one();
     });
 
-    let start = Instant::now();
-    loop {
-        if handle.is_finished() {
-            break;
-        }
-        if start.elapsed() >= Duration::from_millis(timeout_ms) {
-            return None;
-        }
-        thread::sleep(Duration::from_millis(10));
+    let mut guard = lock.lock();
+    let wait_result = cvar.wait_for(&mut guard, Duration::from_millis(timeout_ms));
+
+    if wait_result.timed_out() {
+        return None;
     }
 
-    let guard = result.lock().unwrap_or_else(|e| e.into_inner());
     let ret = InteractionThreadResult {
         html: guard.html.clone(),
         click_prevented: guard.click_prevented,
@@ -664,25 +662,146 @@ mod tests {
     // ==================== Click Tests ====================
 
     #[test]
-    fn test_js_click_dispatches_event() {
+    fn test_window_location_href_detection() {
         let html = test_page_html(
-            r#"<div id="target" onclick="document.getElementById('output').textContent='clicked'"><span id="output">not clicked</span></div>"#
+            r#"<button id="btn" onclick="document.getElementById('out').textContent='fired'; window.location.href='/new-page'">Go</button><span id="out">waiting</span>"#
         );
 
         let interaction_js = r#"
-            var target = document.querySelector('#target');
-            if (target) {
-                target.click();
-            }
+            var btn = document.querySelector('#btn');
+            if (btn) btn.click();
         "#;
 
-        let result = run_interaction(&html, interaction_js);
+        let result = execute_interaction_thread(
+            html,
+            "https://example.com".to_string(),
+            interaction_js.to_string(),
+            5000,
+            "TestBot/1.0".to_string(),
+            None,
+        );
+
         assert!(result.is_some());
-        let output = result.unwrap();
-        assert!(
-            output.contains("clicked"),
-            "Expected 'clicked' in output, got: {}",
-            output
+        let r = result.unwrap();
+        eprintln!("[DEBUG] navigation_href: {:?}", r.navigation_href);
+        eprintln!("[DEBUG] html: {:?}", r.html);
+        assert_eq!(
+            r.navigation_href.as_deref(),
+            Some("/new-page"),
+            "Expected navigation_href to be detected from window.location.href setter"
+        );
+    }
+
+    #[test]
+    fn test_location_assign_detection() {
+        let html = test_page_html(
+            r#"<button id="btn" onclick="location.assign('/assign-target')">Go</button>"#
+        );
+
+        let interaction_js = r#"
+            var btn = document.querySelector('#btn');
+            if (btn) btn.click();
+        "#;
+
+        let result = execute_interaction_thread(
+            html,
+            "https://example.com".to_string(),
+            interaction_js.to_string(),
+            5000,
+            "TestBot/1.0".to_string(),
+            None,
+        );
+
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(
+            r.navigation_href.as_deref(),
+            Some("/assign-target"),
+            "Expected navigation_href to be detected from location.assign()"
+        );
+    }
+
+    #[test]
+    fn test_location_replace_detection() {
+        let html = test_page_html(
+            r#"<button id="btn" onclick="location.replace('/replace-target')">Go</button>"#
+        );
+
+        let interaction_js = r#"
+            var btn = document.querySelector('#btn');
+            if (btn) btn.click();
+        "#;
+
+        let result = execute_interaction_thread(
+            html,
+            "https://example.com".to_string(),
+            interaction_js.to_string(),
+            5000,
+            "TestBot/1.0".to_string(),
+            None,
+        );
+
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(
+            r.navigation_href.as_deref(),
+            Some("/replace-target"),
+            "Expected navigation_href to be detected from location.replace()"
+        );
+    }
+
+    #[test]
+    fn test_location_reload_no_navigation() {
+        let html = test_page_html(
+            r#"<button id="btn" onclick="location.reload()">Go</button>"#
+        );
+
+        let interaction_js = r#"
+            var btn = document.querySelector('#btn');
+            if (btn) btn.click();
+        "#;
+
+        let result = execute_interaction_thread(
+            html,
+            "https://example.com".to_string(),
+            interaction_js.to_string(),
+            5000,
+            "TestBot/1.0".to_string(),
+            None,
+        );
+
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(
+            r.navigation_href,
+            None,
+            "location.reload() should not trigger navigation detection"
+        );
+    }
+
+    #[test]
+    fn test_location_href_full_url_detection() {
+        let html = test_page_html(
+            r#"<script>window.location.href = 'https://other-site.com/path';</script>"#
+        );
+
+        let interaction_js = "";
+
+        let result = execute_interaction_thread(
+            html,
+            "https://example.com".to_string(),
+            interaction_js.to_string(),
+            5000,
+            "TestBot/1.0".to_string(),
+            None,
+        );
+
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(
+            r.navigation_href.as_deref(),
+            Some("https://other-site.com/path"),
+            "Expected navigation_href to be detected from window.location.href in script tag"
         );
     }
 

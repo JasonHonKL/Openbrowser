@@ -129,3 +129,56 @@ export interface ToolResult {
   content: string;
   error?: string;
 }
+
+export interface SuggestedAction {
+  action_type: string;
+  element_id?: number;
+  selector?: string;
+  label?: string;
+  reason: string;
+  confidence: number;
+}
+
+export interface ActionPlanResult {
+  url: string;
+  suggestions: SuggestedAction[];
+  page_type: string;
+  has_forms: boolean;
+  has_pagination: boolean;
+  interactive_count: number;
+}
+
+export interface BrowserGetActionPlanResult {
+  success: boolean;
+  actionPlan?: ActionPlanResult;
+  error?: string;
+}
+
+export interface FilledField {
+  field_name: string;
+  value: string;
+  matched_by: string;
+}
+
+export interface UnmatchedField {
+  field_name?: string;
+  field_type: string;
+  label?: string;
+  placeholder?: string;
+  required: boolean;
+}
+
+export interface BrowserAutoFillResult {
+  success: boolean;
+  filledFields?: FilledField[];
+  unmatchedFields?: UnmatchedField[];
+  error?: string;
+}
+
+export interface BrowserWaitResult {
+  success: boolean;
+  satisfied: boolean;
+  condition: string;
+  reason?: string;
+  error?: string;
+}

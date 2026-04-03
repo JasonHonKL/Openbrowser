@@ -106,6 +106,36 @@ export function createMockBrowserManager(): BrowserManager {
           title: 'Example', 
           markdown: '' 
         }),
+        getActionPlan: async () => ({
+          success: true,
+          actionPlan: {
+            url: instanceUrls.get(id) || 'https://example.com',
+            suggestions: [
+              { action_type: 'Click', reason: 'Submit button found', confidence: 0.95, selector: 'button[type="submit"]' },
+              { action_type: 'Fill', reason: 'Empty email field', confidence: 0.9, selector: 'input[name="email"]', label: 'Email' },
+            ],
+            page_type: 'FormPage',
+            has_forms: true,
+            has_pagination: false,
+            interactive_count: 5,
+          },
+        }),
+        autoFill: async () => ({
+          success: true,
+          filledFields: [
+            { field_name: 'email', value: 'test@example.com', matched_by: 'ByName' },
+            { field_name: 'password', value: 'secret123', matched_by: 'ByType' },
+          ],
+          unmatchedFields: [
+            { field_type: 'text', label: 'Phone', placeholder: 'Enter phone', required: false, field_name: 'phone' },
+          ],
+        }),
+        wait: async (condition: string) => ({
+          success: true,
+          satisfied: true,
+          condition,
+          reason: condition === 'contentLoaded' ? 'content-loaded' : 'content-stable',
+        }),
         kill: () => {},
         on: function(event: string, handler: () => void) {
           return this;

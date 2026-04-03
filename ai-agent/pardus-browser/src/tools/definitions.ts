@@ -388,6 +388,96 @@ export const browserTools: ToolDefinition[] = [
   {
     type: 'function',
     function: {
+      name: 'browser_get_action_plan',
+      description: 'Get an AI-optimized action plan for the current page. Returns page type classification (login, search, form, listing, etc.), a prioritized list of suggested actions with confidence scores, and whether the page has forms or pagination. Use after navigating to decide what to do next.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_auto_fill',
+      description: 'Auto-fill form fields on the current page using smart matching (by field name, label, placeholder, or input type). Returns which fields were filled and which were unmatched. Use when a form has multiple fields to fill efficiently.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          fields: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                key: {
+                  type: 'string',
+                  description: 'Field name, label, or type to match (e.g., "email", "username", "password")',
+                },
+                value: {
+                  type: 'string',
+                  description: 'Value to fill into the matched field',
+                },
+              },
+              required: ['key', 'value'],
+            },
+            description: 'Array of key-value pairs to fill into form fields',
+          },
+        },
+        required: ['instance_id', 'fields'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_wait',
+      description: 'Wait for a smart condition on the current page instead of using a fixed wait_ms. Prefer this over wait_ms for SPAs and dynamic pages. Conditions: contentLoaded (waits for no spinners/skeletons + substantial content), contentStable (waits for DOM to stop changing), networkIdle (longer stable wait for lazy-loaded content), minInteractive (waits for N interactive elements to appear), selector (waits for a CSS selector to appear).',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          condition: {
+            type: 'string',
+            enum: ['contentLoaded', 'contentStable', 'networkIdle', 'minInteractive', 'selector'],
+            description: 'The wait condition to use',
+          },
+          selector: {
+            type: 'string',
+            description: 'Required when condition is "selector": the CSS selector to wait for',
+          },
+          min_count: {
+            type: 'number',
+            description: 'Required when condition is "minInteractive": minimum number of interactive elements to wait for (default: 1)',
+          },
+          timeout_ms: {
+            type: 'number',
+            description: 'Maximum wait time in milliseconds (default: 10000)',
+          },
+          interval_ms: {
+            type: 'number',
+            description: 'Polling interval in milliseconds (default: 500)',
+          },
+        },
+        required: ['instance_id', 'condition'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'browser_list',
       description: 'List all active browser instances with their current URLs and connection status.',
       parameters: {
@@ -430,6 +520,9 @@ export type BrowserToolName =
   | 'browser_set_storage'
   | 'browser_delete_storage'
   | 'browser_clear_storage'
+  | 'browser_get_action_plan'
+  | 'browser_auto_fill'
+  | 'browser_wait'
   | 'browser_get_state'
   | 'browser_list'
   | 'browser_close';

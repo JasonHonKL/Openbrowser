@@ -4,6 +4,8 @@
 
 // Event listener storage (global)
 const _eventListeners = new Map();
+// Timer callback storage
+const _timerCallbacks = new Map();
 
 class Event {
   constructor(type, eventInitDict = {}) {
@@ -569,7 +571,16 @@ const window = {
     hostname: "",
     pathname: "/",
     search: "",
-    hash: ""
+    hash: "",
+    assign: function(url) {
+      var docEl = document.documentElement;
+      if (docEl) docEl.setAttribute('data-pardus-navigation-href', String(url));
+    },
+    replace: function(url) {
+      var docEl = document.documentElement;
+      if (docEl) docEl.setAttribute('data-pardus-navigation-href', String(url));
+    },
+    reload: function() {}
   }, {
     set(target, prop, value) {
       target[prop] = value;
@@ -583,7 +594,77 @@ const window = {
       return true;
     }
   }),
-  navigator: { userAgent: "PardusBrowser/0.1.0" },
+  navigator: {
+    userAgent: typeof globalThis.__pardusUserAgent !== 'undefined'
+        ? globalThis.__pardusUserAgent
+        : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    appName: "Netscape",
+    appVersion: "5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    appCodeName: "Mozilla",
+    product: "Gecko",
+    productSub: "20030107",
+    vendor: "Google Inc.",
+    vendorSub: "",
+    platform: "MacIntel",
+    language: "en-US",
+    languages: ["en-US", "en"],
+    onLine: true,
+    cookieEnabled: true,
+    doNotTrack: null,
+    hardwareConcurrency: 8,
+    maxTouchPoints: 0,
+    pdfViewerEnabled: true,
+    webdriver: false,
+    sendBeacon: function() { return true; },
+    getBattery: function() {
+      return Promise.resolve({
+        charging: true, chargingTime: 0, dischargingTime: Infinity, level: 1.0,
+        addEventListener: function() {}, removeEventListener: function() {}
+      });
+    },
+    getGamepads: function() { return []; },
+    javaEnabled: function() { return false; },
+    plugins: (function() {
+      function FakePlugin(name, desc, fn) {
+        this.name = name; this.description = desc; this.filename = fn; this.length = 0;
+      }
+      FakePlugin.prototype.item = function() { return null; };
+      FakePlugin.prototype.namedItem = function() { return null; };
+      var arr = [
+        new FakePlugin("PDF Viewer", "Portable Document Format", "internal-pdf-viewer"),
+        new FakePlugin("Chrome PDF Viewer", "Portable Document Format", "internal-pdf-viewer"),
+        new FakePlugin("Chromium PDF Viewer", "Portable Document Format", "internal-pdf-viewer"),
+      ];
+      arr.item = function(i) { return this[i] || null; };
+      arr.namedItem = function(n) { for (var j = 0; j < this.length; j++) { if (this[j].name === n) return this[j]; } return null; };
+      arr.refresh = function() {};
+      return arr;
+    })(),
+    mimeTypes: (function() {
+      var arr = [{ type: "application/pdf", suffixes: "pdf", description: "Portable Document Format" }];
+      arr.item = function(i) { return this[i] || null; };
+      arr.namedItem = function() { return null; };
+      return arr;
+    })(),
+    connection: { effectiveType: "4g", rtt: 50, downlink: 10, saveData: false, addEventListener: function() {}, removeEventListener: function() {} },
+    storage: { estimate: function() { return Promise.resolve({ quota: 299706064076, usage: 0 }); } },
+    clipboard: { readText: function() { return Promise.resolve(""); }, writeText: function() { return Promise.resolve(); } },
+    permissions: { query: function() { return Promise.resolve({ state: "granted", addEventListener: function() {} }); } },
+    mediaDevices: { enumerateDevices: function() { return Promise.resolve([]); } },
+    locks: { request: function(n, cb) { return Promise.resolve(typeof cb === 'function' ? cb() : undefined); } },
+    credentials: { get: function() { return Promise.resolve(null); }, create: function() { return Promise.resolve(null); } },
+    uaData: {
+      brands: [ { brand: "Google Chrome", version: "131" }, { brand: "Chromium", version: "131" }, { brand: "Not_A Brand", version: "24" } ],
+      mobile: false,
+      platform: "macOS",
+      getHighEntropyValues: function() {
+        return Promise.resolve({ architecture: "arm", bitness: "64", model: "", platformVersion: "14.0.0",
+          fullVersionList: [ { brand: "Google Chrome", version: "131.0.6778.86" }, { brand: "Chromium", version: "131.0.6778.86" } ]
+        });
+      },
+      toJSON: function() { return { brands: this.brands, mobile: this.mobile, platform: this.platform }; }
+    },
+  },
   console: {
     log(...a) {},
     warn(...a) {},
@@ -592,16 +673,30 @@ const window = {
     debug(...a) {},
   },
   setTimeout(fn, ms) {
-    // Don't execute - just return a fake timer ID
-    // Executing callbacks synchronously can cause infinite loops on complex sites
-    return 1;
+    if (typeof fn === 'function') {
+      // Store callback in a map and pass its body to the timer op
+      var id = Deno.core.ops.op_set_timeout(fn.toString(), ms || 0);
+      _timerCallbacks.set(id, fn);
+      return id;
+    }
+    return 0;
   },
   setInterval(fn, ms) {
-    // Don't execute - just return a fake timer ID
-    return 1;
+    if (typeof fn === 'function') {
+      var id = Deno.core.ops.op_set_interval(fn.toString(), ms || 0);
+      _timerCallbacks.set(id, fn);
+      return id;
+    }
+    return 0;
   },
-  clearTimeout() {},
-  clearInterval() {},
+  clearTimeout(id) {
+    _timerCallbacks.delete(id);
+    Deno.core.ops.op_clear_timer(id);
+  },
+  clearInterval(id) {
+    _timerCallbacks.delete(id);
+    Deno.core.ops.op_clear_timer(id);
+  },
   getComputedStyle() { return new Proxy({}, { get: () => "" }); },
   matchMedia() {
     return { matches: false, addListener() {}, removeListener() {} };
@@ -758,9 +853,206 @@ globalThis.clearTimeout = window.clearTimeout;
 globalThis.clearInterval = window.clearInterval;
 globalThis.console = window.console;
 globalThis.navigator = window.navigator;
-globalThis.performance = { now: () => Date.now() };
+globalThis.performance = (function() {
+  var _origin = Date.now();
+  var _timing = {
+    navigationStart: _origin - 500,
+    unloadEventStart: 0, unloadEventEnd: 0,
+    redirectStart: 0, redirectEnd: 0,
+    fetchStart: _origin - 490,
+    domainLookupStart: _origin - 480, domainLookupEnd: _origin - 470,
+    connectStart: _origin - 470, connectEnd: _origin - 450,
+    secureConnectionStart: _origin - 460,
+    requestStart: _origin - 440,
+    responseStart: _origin - 200, responseEnd: _origin - 100,
+    domLoading: _origin - 90, domInteractive: _origin - 50,
+    domContentLoadedEventStart: _origin - 40, domContentLoadedEventEnd: _origin - 30,
+    domComplete: _origin - 10,
+    loadEventStart: _origin - 5, loadEventEnd: _origin,
+  };
+  return {
+    now: function() { return Date.now() - _origin; },
+    timeOrigin: _origin,
+    timing: _timing,
+    navigation: { type: 0, redirectCount: 0 },
+    getEntries: function() { return []; },
+    getEntriesByType: function() { return []; },
+    getEntriesByName: function() { return []; },
+    mark: function() {}, measure: function() {},
+    clearMarks: function() {}, clearMeasures: function() {},
+    toJSON: function() { return { timing: _timing, navigation: this.navigation }; }
+  };
+})();
 globalThis.self = globalThis;
 globalThis.top = globalThis;
 globalThis.parent = globalThis;
 globalThis.frames = globalThis;
 globalThis.__modules = {};
+
+// ==================== window.chrome (Chrome-specific) ====================
+globalThis.chrome = {
+  runtime: {
+    onMessage: { addListener: function() {}, removeListener: function() {} },
+    onConnect: { addListener: function() {}, removeListener: function() {} },
+    sendMessage: function() {},
+    connect: function() { return { onMessage: { addListener: function() {} }, postMessage: function() {}, disconnect: function() {} }; },
+    getURL: function(p) { return "chrome-extension://invalid/" + p; },
+    id: undefined
+  },
+  csi: function() { return { startE: Date.now(), onloadT: Date.now(), pageT: 0 }; },
+  loadTimes: function() {
+    var t = Date.now() / 1000;
+    return { requestTime: t, startLoadTime: t, commitLoadTime: t, finishDocumentLoadTime: t, finishLoadTime: t,
+      firstPaintTime: t, firstPaintAfterLoadTime: 0, navigationType: "Other", wasFetchedViaSpdy: true,
+      wasNpnNegotiated: true, npnNegotiatedProtocol: "h2", wasAlternateProtocolAvailable: false, connectionInfo: "h2" };
+  },
+};
+
+// ==================== Screen object ====================
+globalThis.screen = {
+  width: 1920, height: 1080,
+  availWidth: 1920, availHeight: 1055,
+  colorDepth: 30, pixelDepth: 30,
+  orientation: { angle: 0, type: "landscape-primary", addEventListener: function() {}, removeEventListener: function() {} }
+};
+
+// ==================== Window dimension overrides ====================
+Object.defineProperty(window, 'outerWidth', { value: 1920, writable: true });
+Object.defineProperty(window, 'outerHeight', { value: 1055, writable: true });
+Object.defineProperty(window, 'screenX', { value: 0, writable: true });
+Object.defineProperty(window, 'screenY', { value: 25, writable: true });
+Object.defineProperty(window, 'screenLeft', { value: 0, writable: true });
+Object.defineProperty(window, 'screenTop', { value: 25, writable: true });
+Object.defineProperty(window, 'devicePixelRatio', { value: 2, writable: true });
+Object.defineProperty(window, 'pageXOffset', { get: function() { return 0; } });
+Object.defineProperty(window, 'pageYOffset', { get: function() { return 0; } });
+Object.defineProperty(window, 'scrollX', { get: function() { return 0; } });
+Object.defineProperty(window, 'scrollY', { get: function() { return 0; } });
+
+// ==================== Toolbar stubs ====================
+window.locationbar = { visible: true };
+window.menubar = { visible: true };
+window.personalbar = { visible: true };
+window.scrollbars = { visible: true };
+window.statusbar = { visible: true };
+window.toolbar = { visible: true };
+
+// ==================== History stub ====================
+globalThis.history = {
+  length: 1, scrollRestoration: "auto", state: null,
+  back: function() {}, forward: function() {}, go: function() {},
+  pushState: function() {}, replaceState: function() {},
+};
+
+// ==================== Additional Web APIs ====================
+
+// trustedTypes — stub that satisfies Google's policy check
+globalThis.trustedTypes = {
+  createPolicy: function(name, rules) {
+    return {
+      createHTML: rules && rules.createHTML ? rules.createHTML : (s) => s,
+      createScript: rules && rules.createScript ? rules.createScript : (s) => s,
+      createScriptURL: rules && rules.createScriptURL ? rules.createScriptURL : (s) => s,
+    };
+  },
+  isHTML: function() { return false; },
+  isScript: function() { return false; },
+  isScriptURL: function() { return false; },
+};
+
+// requestAnimationFrame — execute callback immediately
+globalThis.requestAnimationFrame = function(cb) {
+  if (typeof cb === 'function') {
+    try { cb(Date.now()); } catch(e) {}
+  }
+  return 1;
+};
+globalThis.cancelAnimationFrame = function() {};
+
+// btoa / atob — Base64 encoding/decoding
+globalThis.btoa = function(str) {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  var output = '';
+  for (var i = 0; i < str.length; i += 3) {
+    var b1 = str.charCodeAt(i);
+    var b2 = i + 1 < str.length ? str.charCodeAt(i + 1) : 0;
+    var b3 = i + 2 < str.length ? str.charCodeAt(i + 2) : 0;
+    output += chars[b1 >> 2] + chars[((b1 & 3) << 4) | (b2 >> 4)];
+    output += i + 1 < str.length ? chars[((b2 & 15) << 2) | (b3 >> 6)] : '=';
+    output += i + 2 < str.length ? chars[b3 & 63] : '=';
+  }
+  return output;
+};
+globalThis.atob = function(b64) {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  var output = '';
+  var i = 0;
+  b64 = b64.replace(/[^A-Za-z0-9\+\/\=]/g, '');
+  while (i < b64.length) {
+    var e1 = chars.indexOf(b64.charAt(i++));
+    var e2 = chars.indexOf(b64.charAt(i++));
+    var e3 = chars.indexOf(b64.charAt(i++));
+    var e4 = chars.indexOf(b64.charAt(i++));
+    output += String.fromCharCode((e1 << 2) | (e2 >> 4));
+    if (e3 !== 64) output += String.fromCharCode(((e2 & 15) << 4) | (e3 >> 2));
+    if (e4 !== 64) output += String.fromCharCode(((e3 & 3) << 6) | e4);
+  }
+  return output;
+};
+
+// TextEncoder / TextDecoder stubs
+if (typeof TextEncoder === 'undefined') {
+  globalThis.TextEncoder = function() {
+    this.encode = function(str) { return new Uint8Array([]); };
+  };
+}
+if (typeof TextDecoder === 'undefined') {
+  globalThis.TextDecoder = function() {
+    this.decode = function(buf) { return ''; };
+  };
+}
+
+// URL constructor (if not already available)
+if (typeof URL === 'undefined') {
+  globalThis.URL = function(url, base) {
+    // Minimal URL parser
+    this.href = url;
+    this.origin = '';
+    this.protocol = '';
+    this.host = '';
+    this.hostname = '';
+    this.pathname = '';
+    this.search = '';
+    this.hash = '';
+  };
+}
+
+// XMLHttpRequest stub — enough to not crash scripts
+globalThis.XMLHttpRequest = function() {
+  this.readyState = 0;
+  this.status = 0;
+  this.responseText = '';
+  this.responseURL = '';
+  this.onreadystatechange = null;
+  this.onload = null;
+  this.onerror = null;
+  this.open = function() { this.readyState = 1; };
+  this.send = function() { this.readyState = 4; this.status = 200; if (this.onload) this.onload(); };
+  this.setRequestHeader = function() {};
+  this.getResponseHeader = function() { return null; };
+  this.abort = function() {};
+};
+
+// Image stub
+globalThis.Image = function() {
+  this.src = '';
+  this.onload = null;
+  this.onerror = null;
+};
+
+// Promise-based queueMicrotask
+if (typeof globalThis.queueMicrotask === 'undefined') {
+  globalThis.queueMicrotask = function(cb) {
+    Promise.resolve().then(cb);
+  };
+}

@@ -1,0 +1,12 @@
+[package]
+name = "pardus-challenge"
+version.workspace = true
+edition.workspace = true
+description = "CAPTCHA / bot-challenge detection and human-in-the-loop resolution for pardus-browser"
+
+[dependencies]
+pardus-core = { path = "../pardus-core" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }

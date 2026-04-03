@@ -4,7 +4,7 @@
 //! and builds conditional request headers (If-None-Match, If-Modified-Since).
 
 use chrono::{DateTime, Utc};
-use reqwest::header::HeaderMap;
+use rquest::header::HeaderMap;
 use std::time::{Duration, Instant};
 
 const HEURISTIC_FRACTION: f64 = 0.1;
@@ -211,7 +211,7 @@ mod tests {
     use super::*;
 
     fn header_map(pairs: &[(&str, &str)]) -> HeaderMap {
-        use reqwest::header::HeaderName;
+        use rquest::header::HeaderName;
         let mut m = HeaderMap::new();
         for (k, v) in pairs {
             let name = HeaderName::from_bytes(k.as_bytes()).expect("invalid header name");

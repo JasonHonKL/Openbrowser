@@ -62,6 +62,7 @@ deno_core::extension!(
         op_disconnect_observer,
         op_take_mutation_records,
         op_has_observers,
+        op_drain_pending_mutations,
         // SSE / EventSource
         op_sse_open,
         op_sse_close,

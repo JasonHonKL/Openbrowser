@@ -1,12 +1,14 @@
 //! Fetch operation for deno_core.
 //!
-//! Provides JavaScript fetch API via reqwest with timeout, body size limits,
+//! Provides JavaScript fetch API via rquest with timeout, body size limits,
 //! and HTTP cache compliance (ETag, Last-Modified, conditional requests).
 
 use deno_core::*;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -15,22 +17,12 @@ use crate::url_policy::UrlPolicy;
 
 const OP_FETCH_MAX_BODY_SIZE: usize = 1_048_576;
 
-// Sandbox: thread-local flag to block JS fetch without needing OpState in async context.
-// Set per-runtime-creation in execute_scripts_with_timeout.
-use std::sync::atomic::{AtomicBool, Ordering};
-static SANDBOX_FETCH_BLOCKED: AtomicBool = AtomicBool::new(false);
-
-/// Set whether JS fetch should be blocked by sandbox policy.
-/// Called when creating the JS runtime thread.
-pub fn set_sandbox_fetch_blocked(blocked: bool) {
-    SANDBOX_FETCH_BLOCKED.store(blocked, Ordering::SeqCst);
+/// Per-runtime fetch policy, stored in OpState.
+pub struct FetchPolicy {
+    pub blocked: bool,
 }
 
-fn is_fetch_blocked_by_sandbox() -> bool {
-    SANDBOX_FETCH_BLOCKED.load(Ordering::SeqCst)
-}
-
-fn get_fetch_client() -> &'static reqwest::Client {
+fn get_fetch_client() -> &'static rquest::Client {
     crate::http::client::fetch_client()
 }
 
@@ -58,12 +50,12 @@ fn is_url_safe(url: &str) -> bool {
 }
 
 fn build_request(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
     body: &Option<String>,
-) -> reqwest::RequestBuilder {
+) -> rquest::RequestBuilder {
     let req = match method {
         "POST" => client.post(url),
         "PUT" => client.put(url),
@@ -83,7 +75,7 @@ fn build_request(
     req
 }
 
-fn extract_response_headers(resp: &reqwest::Response) -> (u16, String, HashMap<String, String>) {
+fn extract_response_headers(resp: &rquest::Response) -> (u16, String, HashMap<String, String>) {
     let status = resp.status().as_u16();
     let status_text = resp
         .status()
@@ -98,7 +90,7 @@ fn extract_response_headers(resp: &reqwest::Response) -> (u16, String, HashMap<S
     (status, status_text, headers)
 }
 
-async fn read_body_with_limit(resp: reqwest::Response, max_size: usize) -> String {
+async fn read_body_with_limit(resp: rquest::Response, max_size: usize) -> String {
     let mut bytes = Vec::with_capacity(1024.min(max_size));
     let mut stream = resp.bytes_stream();
 
@@ -139,9 +131,15 @@ impl FetchCacheMode {
 
 #[op2]
 #[serde]
-pub async fn op_fetch(#[serde] args: FetchArgs) -> FetchResult {
-    // Sandbox: block JS fetch if globally disabled
-    if is_fetch_blocked_by_sandbox() {
+pub async fn op_fetch(
+    op_state: Rc<RefCell<OpState>>,
+    #[serde] args: FetchArgs,
+) -> FetchResult {
+    // Sandbox: block JS fetch if this runtime has fetch disabled
+    let blocked = op_state.borrow().try_borrow::<FetchPolicy>()
+        .map(|p| p.blocked)
+        .unwrap_or(false);
+    if blocked {
         return FetchResult {
             ok: false,
             status: 403,
@@ -269,7 +267,7 @@ pub async fn op_fetch(#[serde] args: FetchArgs) -> FetchResult {
 
                                 let body = read_body_with_limit(resp, OP_FETCH_MAX_BODY_SIZE).await;
                                 if (200..300).contains(&status) {
-                                    cache.insert(&args.url, bytes::Bytes::from(body.clone()), None, &reqwest::header::HeaderMap::new());
+                                    cache.insert(&args.url, bytes::Bytes::from(body.clone()), None, &rquest::header::HeaderMap::new());
                                 }
                                 headers.insert("x-cache".to_string(), "miss".to_string());
                                 return FetchResult {
@@ -319,7 +317,7 @@ pub async fn op_fetch(#[serde] args: FetchArgs) -> FetchResult {
                     &args.url,
                     bytes::Bytes::from(body.clone()),
                     headers.get("content-type").cloned(),
-                    &reqwest::header::HeaderMap::new(),
+                    &rquest::header::HeaderMap::new(),
                 );
             }
 

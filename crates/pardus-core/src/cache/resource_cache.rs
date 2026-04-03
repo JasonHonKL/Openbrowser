@@ -3,7 +3,7 @@
 use super::http_cache_policy::CachePolicy;
 use bytes::Bytes;
 use dashmap::DashMap;
-use reqwest::header::HeaderMap;
+use rquest::header::HeaderMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;

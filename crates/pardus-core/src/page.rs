@@ -46,17 +46,100 @@ pub struct Page {
 impl Page {
     #[must_use = "ignoring Result may silently swallow navigation errors"]
     pub async fn from_url(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
-        Self::fetch_and_create(app, url).await
+        Self::fetch_and_create(app, url, 0).await
     }
 
     /// Fetch a URL and create a Page, routing to PDF extraction when appropriate.
-    pub async fn fetch_and_create(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
-        app.validate_url(url)?;
+    ///
+    /// The HTTP pipeline runs in this order:
+    /// 1. Request deduplication (skip if same URL already in-flight)
+    /// 2. Request interception (before-request: block / redirect / modify / mock)
+    /// 3. HTTP fetch with retry (exponential backoff for transient failures)
+    /// 4. Response interception (after-response: modify / block)
+    /// 5. Meta refresh redirect detection (up to MAX_REDIRECT_DEPTH)
+    pub(crate) async fn fetch_and_create(app: &Arc<App>, url: &str, mut depth: usize) -> anyhow::Result<Self> {
+        let mut current_url = url.to_string();
 
+        loop {
+            if depth >= Self::MAX_REDIRECT_DEPTH {
+                anyhow::bail!("Redirect depth exceeded ({} >= {}) for {}", depth, Self::MAX_REDIRECT_DEPTH, current_url);
+            }
+
+            let page = Self::fetch_and_create_single(app, &current_url).await?;
+
+            if let Some(refresh_url) = page.meta_refresh_url() {
+                tracing::debug!(target: "page", "meta refresh redirect: {} -> {}", current_url, refresh_url);
+                current_url = refresh_url;
+                depth += 1;
+                continue;
+            }
+
+            return Ok(page);
+        }
+    }
+
+    async fn fetch_and_create_single(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
+
+        // --- Phase 1: Request deduplication ---
+        let url_key = crate::dedup::dedup_key(url);
+        if app.dedup.is_enabled() {
+            match app.dedup.enter(&url_key).await {
+                crate::dedup::DedupEntry::Cached(result) => {
+                    return Self::from_dedup_result(&result);
+                }
+                crate::dedup::DedupEntry::Wait(notify) => {
+                    notify.notified().await;
+                    if let Some(result) = app.dedup.get_completed(&url_key) {
+                        return Self::from_dedup_result(&result);
+                    }
+                    // Result was removed (error path) — fall through to own fetch.
+                }
+                crate::dedup::DedupEntry::Proceed => {}
+            }
+        }
+
+        // --- Phase 2: Request interception ---
+        let mut req_ctx = crate::intercept::RequestContext {
+            url: url.to_string(),
+            method: "GET".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: None,
+            resource_type: ResourceType::Document,
+            initiator: Initiator::Navigation,
+            is_navigation: true,
+        };
+
+        let action = app.interceptors.run_before_request(&mut req_ctx).await;
+
+        let effective_url = match action {
+            crate::intercept::InterceptAction::Block => {
+                anyhow::bail!("Request to '{}' blocked by interceptor", url);
+            }
+            crate::intercept::InterceptAction::Redirect(target) => {
+                app.validate_url(&target)?;
+                target
+            }
+            crate::intercept::InterceptAction::Mock(mock) => {
+                tracing::debug!("interceptor mocked response for {}", url);
+                return Ok(Self::from_mock_response(&req_ctx.url, &mock));
+            }
+            crate::intercept::InterceptAction::Modify(_) | crate::intercept::InterceptAction::Continue => {
+                req_ctx.url.clone()
+            }
+        };
+
+        // Re-validate if the URL was changed.
+        if effective_url != url {
+            app.validate_url(&effective_url)?;
+        }
+
+        // --- Phase 3: HTTP fetch with retry ---
         let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let start = Instant::now();
 
-        let response = app.http_client.get(url).send().await?;
+        let retry_config = app.config.read().retry.clone();
+        let response = Self::fetch_with_retry(app, &effective_url, &req_ctx.headers, &retry_config).await?;
+
         let http_version = format_http_version(response.version());
         let status = response.status().as_u16();
         let final_url = response.url().to_string();
@@ -72,6 +155,27 @@ impl Page {
             .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
             .collect();
 
+        // --- Phase 4: Response interception ---
+        let resp_ctx = crate::intercept::ResponseContext {
+            url: final_url.clone(),
+            status,
+            headers: resp_headers.iter().cloned().collect(),
+            body: None,
+            resource_type: ResourceType::Document,
+        };
+        let post_action = app.interceptors.run_after_response(&mut {
+            let mut ctx = resp_ctx;
+            // Response interception only runs if interceptors exist
+            ctx
+        }).await;
+
+        // For after-response, we only block or continue (modify on response is rare)
+        if let crate::intercept::InterceptAction::Block = post_action {
+            app.dedup.remove(&url_key);
+            anyhow::bail!("Response from '{}' blocked by interceptor", final_url);
+        }
+
+        // --- Process response body ---
         let is_pdf = content_type.as_ref().map_or(false, |ct| {
             ct.split(';').next().unwrap_or(ct).trim().to_lowercase() == "application/pdf"
         });
@@ -85,6 +189,7 @@ impl Page {
 
             let config = app.config.read();
             if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
+                app.dedup.remove(&url_key);
                 anyhow::bail!(
                     "PDF size ({} bytes) exceeds sandbox limit ({} bytes)",
                     body_size,
@@ -95,9 +200,19 @@ impl Page {
 
             let timing_ms = start.elapsed().as_millis();
             record_main_request(
-                app, url, &final_url, status, &content_type,
-                body_size, timing_ms, &resp_headers, started_at, http_version,
+                app, &effective_url, &final_url, status, &content_type,
+                body_size, timing_ms, &resp_headers, started_at, &http_version,
             );
+
+            let result = crate::dedup::DedupResult {
+                url: final_url.clone(),
+                status,
+                body: bytes.to_vec(),
+                content_type: content_type.clone(),
+                headers: resp_headers.clone(),
+                http_version: http_version.clone(),
+            };
+            app.dedup.complete(&url_key, result);
 
             return Self::from_pdf_bytes(&bytes, &final_url, status, content_type);
         }
@@ -105,8 +220,30 @@ impl Page {
         let body = response.text().await?;
         let body_size = body.len();
 
+        // Check for RSS/Atom feed content
+        if crate::feed::is_feed_content(body.as_bytes(), content_type.as_deref()) {
+            let timing_ms = start.elapsed().as_millis();
+            record_main_request(
+                app, &effective_url, &final_url, status, &content_type,
+                body_size, timing_ms, &resp_headers, started_at, &http_version,
+            );
+
+            let result = crate::dedup::DedupResult {
+                url: final_url.clone(),
+                status,
+                body: body.as_bytes().to_vec(),
+                content_type: content_type.clone(),
+                headers: resp_headers.clone(),
+                http_version: http_version.clone(),
+            };
+            app.dedup.complete(&url_key, result);
+
+            return Self::from_feed_bytes(body.as_bytes(), &final_url, status, content_type);
+        }
+
         let config = app.config.read();
         if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
+            app.dedup.remove(&url_key);
             anyhow::bail!(
                 "Page size ({} bytes) exceeds sandbox limit ({} bytes)",
                 body_size,
@@ -116,9 +253,19 @@ impl Page {
 
         let timing_ms = start.elapsed().as_millis();
         record_main_request(
-            app, url, &final_url, status, &content_type,
-            body_size, timing_ms, &resp_headers, started_at, http_version,
+            app, &effective_url, &final_url, status, &content_type,
+            body_size, timing_ms, &resp_headers, started_at, &http_version,
         );
+
+        let result = crate::dedup::DedupResult {
+            url: final_url.clone(),
+            status,
+            body: body.as_bytes().to_vec(),
+            content_type: content_type.clone(),
+            headers: resp_headers.clone(),
+            http_version: http_version.clone(),
+        };
+        app.dedup.complete(&url_key, result);
 
         validate_content_type_pub(content_type.as_deref(), &final_url)?;
 
@@ -156,6 +303,104 @@ impl Page {
         })
     }
 
+    fn meta_refresh_url(&self) -> Option<String> {
+        if let Ok(base_url) = Url::parse(&self.base_url) {
+            Self::parse_meta_refresh(&self.html, &base_url)
+        } else {
+            None
+        }
+    }
+
+    /// Create a Page from a mocked response (interceptor returned Mock action).
+    fn from_mock_response(url: &str, mock: &crate::intercept::MockResponse) -> Self {
+        let body_str = String::from_utf8_lossy(&mock.body).to_string();
+        let html = Html::parse_document(&body_str);
+        let content_type = mock.headers.get("content-type").cloned();
+        Self {
+            url: url.to_string(),
+            status: mock.status,
+            content_type,
+            html,
+            base_url: url.to_string(),
+            csp: None,
+            frame_tree: None,
+            cached_tree: None,
+        }
+    }
+
+    /// Create a Page from a deduplicated cached result.
+    fn from_dedup_result(result: &crate::dedup::DedupResult) -> anyhow::Result<Self> {
+        let body_str = String::from_utf8_lossy(&result.body).to_string();
+        let html = Html::parse_document(&body_str);
+
+        validate_content_type_pub(result.content_type.as_deref(), &result.url)?;
+
+        Ok(Self {
+            url: result.url.clone(),
+            status: result.status,
+            content_type: result.content_type.clone(),
+            html,
+            base_url: result.url.clone(),
+            csp: None,
+            frame_tree: None,
+            cached_tree: None,
+        })
+    }
+
+    /// Execute HTTP request with configurable retry and exponential backoff.
+    async fn fetch_with_retry(
+        app: &Arc<App>,
+        url: &str,
+        extra_headers: &std::collections::HashMap<String, String>,
+        retry_config: &crate::config::RetryConfig,
+    ) -> anyhow::Result<rquest::Response> {
+        let mut attempt = 0u32;
+
+        loop {
+            let mut request_builder = app.http_client.get(url);
+
+            // Apply interceptor-modified headers
+            for (name, value) in extra_headers {
+                request_builder = request_builder.header(name.as_str(), value.as_str());
+            }
+
+            // Build the request so we can retry it
+            let request = request_builder
+                .build()
+                .map_err(|e| anyhow::anyhow!("failed to build request: {}", e))?;
+
+            match app.http_client.execute(request).await {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    if retry_config.retry_on_statuses.contains(&status)
+                        && attempt < retry_config.max_retries
+                    {
+                        attempt += 1;
+                        let delay = compute_backoff(attempt, retry_config);
+                        tracing::debug!(
+                            "retry {}/{} for {} (status {}), waiting {}ms",
+                            attempt, retry_config.max_retries, url, status, delay,
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    return Ok(response);
+                }
+                Err(e) if (e.is_timeout() || e.is_connect()) && attempt < retry_config.max_retries => {
+                    attempt += 1;
+                    let delay = compute_backoff(attempt, retry_config);
+                    tracing::debug!(
+                        "retry {}/{} for {} ({}), waiting {}ms",
+                        attempt, retry_config.max_retries, url, e, delay,
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
     /// Create a Page from raw PDF bytes.
     pub fn from_pdf_bytes(
         bytes: &[u8],
@@ -178,42 +423,85 @@ impl Page {
         })
     }
 
+    /// Create a Page from RSS/Atom feed bytes.
+    pub fn from_feed_bytes(
+        bytes: &[u8],
+        url: &str,
+        status: u16,
+        content_type: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let (tree, _title) = crate::feed::extract_feed_tree(bytes)?;
+        let html = Html::parse_document("<html><body></body></html>");
+
+        Ok(Self {
+            url: url.to_string(),
+            status,
+            content_type,
+            html,
+            base_url: url.to_string(),
+            csp: None,
+            frame_tree: None,
+            cached_tree: Some(tree),
+        })
+    }
+
     #[must_use = "ignoring Result may silently swallow navigation errors"]
     #[cfg(feature = "js")]
     pub async fn from_url_with_js(app: &Arc<App>, url: &str, wait_ms: u32) -> anyhow::Result<Self> {
-        let mut page = Self::fetch_and_create(app, url).await?;
+        let mut current_url = url.to_string();
+        let mut depth = 0;
 
-        if page.cached_tree.is_some() {
+        loop {
+            if depth >= Self::MAX_REDIRECT_DEPTH {
+                anyhow::bail!("Redirect depth exceeded ({} >= {}) for {}", depth, Self::MAX_REDIRECT_DEPTH, current_url);
+            }
+
+            let mut page = Self::fetch_and_create(app, &current_url, depth).await?;
+
+            if page.cached_tree.is_some() {
+                return Ok(page);
+            }
+
+            let html_str = page.html.html();
+            let base_url = page.base_url.clone();
+            let sandbox = &app.config.read().sandbox;
+            let user_agent = app.config.read().user_agent.clone();
+            let final_body =
+                crate::js::execute_js(&html_str, &base_url, wait_ms, Some(sandbox), &user_agent).await?;
+
+            if let Some(nav_href) = Self::parse_js_navigation_href(&final_body) {
+                let resolved = Url::parse(&page.url)
+                    .and_then(|base| base.join(&nav_href))
+                    .map(|u| u.to_string())
+                    .unwrap_or_else(|_| nav_href.clone());
+                tracing::debug!(target: "page", "JS location redirect: {} -> {}", page.url, resolved);
+                current_url = resolved;
+                depth += 1;
+                continue;
+            }
+
+            let html = Html::parse_document(&final_body);
+            let base_url = Self::extract_base_url(&html, &page.url, page.csp.as_ref());
+
+            let config = app.config.read();
+            let frame_tree = if config.parse_iframes {
+                let max_depth = config.max_iframe_depth;
+                drop(config);
+                Some(
+                    FrameTree::build(html.clone(), &page.url, &base_url, &app.http_client, max_depth)
+                        .await,
+                )
+            } else {
+                drop(config);
+                None
+            };
+
+            page.html = html;
+            page.base_url = base_url;
+            page.frame_tree = frame_tree;
+
             return Ok(page);
         }
-
-        let html_str = page.html.html();
-        let base_url = page.base_url.clone();
-        let sandbox = &app.config.read().sandbox;
-        let final_body =
-            crate::js::execute_js(&html_str, &base_url, wait_ms, Some(sandbox)).await?;
-
-        let html = Html::parse_document(&final_body);
-        let base_url = Self::extract_base_url(&html, &page.url, page.csp.as_ref());
-
-        let config = app.config.read();
-        let frame_tree = if config.parse_iframes {
-            let max_depth = config.max_iframe_depth;
-            drop(config);
-            Some(
-                FrameTree::build(html.clone(), &page.url, &base_url, &app.http_client, max_depth)
-                    .await,
-            )
-        } else {
-            drop(config);
-            None
-        };
-
-        page.html = html;
-        page.base_url = base_url;
-        page.frame_tree = frame_tree;
-
-        Ok(page)
     }
 
     /// Returns an error indicating JS support is not compiled in.
@@ -257,7 +545,7 @@ impl Page {
     pub async fn from_html_with_frames(
         html_str: &str,
         url: &str,
-        http_client: &reqwest::Client,
+        http_client: &rquest::Client,
         max_depth: usize,
     ) -> Self {
         let html = Html::parse_document(html_str);
@@ -460,7 +748,7 @@ impl Page {
     }
 
     pub async fn fetch_subresources(
-        client: &reqwest::Client,
+        client: &rquest::Client,
         log: &Arc<std::sync::Mutex<pardus_debug::NetworkLog>>,
     ) {
         pardus_debug::fetch::fetch_subresources(client, log, 6).await;
@@ -553,6 +841,88 @@ impl Page {
         }
         fallback.to_string()
     }
+
+    const MAX_REDIRECT_DEPTH: usize = 5;
+
+    /// Parse `<meta http-equiv="refresh" content="<seconds>; url=<url>">` from HTML.
+    ///
+    /// Only the first matching meta tag is honored (browser behavior).
+    /// Returns `Some(resolved_url)` for navigation, or `None` for reload-only / no tag.
+    fn parse_meta_refresh(html: &Html, base_url: &Url) -> Option<String> {
+        let selector = Selector::parse("meta[http-equiv]").ok()?;
+        for el in html.select(&selector) {
+            let equiv = el.value().attr("http-equiv")?;
+            if equiv.eq_ignore_ascii_case("refresh") {
+                let content = el.value().attr("content")?;
+                return Self::parse_refresh_content(content, base_url);
+            }
+        }
+        None
+    }
+
+    fn parse_refresh_content(content: &str, base_url: &Url) -> Option<String> {
+        let parts: Vec<&str> = content.splitn(2, ';').collect();
+        if parts.len() < 2 {
+            return None;
+        }
+        let url_part = parts[1].trim();
+        let url_part = url_part
+            .strip_prefix("url=")
+            .or_else(|| url_part.strip_prefix("URL="))
+            .or_else(|| {
+                let lower = url_part.to_lowercase();
+                if lower.starts_with("url=") {
+                    Some(&url_part[4..])
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                let lower = url_part.to_lowercase();
+                if lower.starts_with("url ") {
+                    let rest = url_part[4..].trim_start();
+                    Some(rest.strip_prefix("=").map(|u| u.trim_start()).unwrap_or(rest))
+                } else {
+                    None
+                }
+            })?;
+        let url_part = url_part.trim();
+
+        let url = if url_part.starts_with('\'') && url_part.ends_with('\'')
+            || url_part.starts_with('"') && url_part.ends_with('"')
+        {
+            &url_part[1..url_part.len() - 1]
+        } else {
+            url_part
+        };
+
+        if url.is_empty() {
+            return None;
+        }
+
+        base_url.join(url).ok().map(|u| u.to_string())
+    }
+
+    /// Parse the `data-pardus-navigation-href` attribute from HTML returned
+    /// by JS execution to detect `location.href`, `location.assign()`, or
+    /// `location.replace()` redirects.
+    #[cfg(feature = "js")]
+    fn parse_js_navigation_href(html_str: &str) -> Option<String> {
+        let doc = Html::parse_document(html_str);
+        let selector = Selector::parse("html[data-pardus-navigation-href]").ok()?;
+        doc.select(&selector).next().and_then(|el| {
+            let href = el.value().attr("data-pardus-navigation-href")?;
+            let trimmed = href.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("javascript:")
+            {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+    }
 }
 
 fn record_main_request(
@@ -565,7 +935,7 @@ fn record_main_request(
     timing_ms: u128,
     response_headers: &[(String, String)],
     started_at: String,
-    http_version: String,
+    http_version: &str,
 ) {
     let mut record = NetworkRecord::fetched(
         1,
@@ -582,7 +952,7 @@ fn record_main_request(
     record.timing_ms = Some(timing_ms);
     record.response_headers = response_headers.to_vec();
     record.started_at = Some(started_at);
-    record.http_version = Some(http_version);
+    record.http_version = Some(http_version.to_string());
 
     if original_url != final_url {
         record.redirect_url = Some(final_url.to_string());
@@ -632,8 +1002,11 @@ pub(crate) fn validate_content_type_pub(content_type: Option<&str>, url: &str) -
             || ct_lower.contains("application/xhtml")
             || ct_lower.contains("application/xml");
         let is_text = ct_lower.starts_with("text/");
+        let is_feed = ct_lower.contains("application/rss+xml")
+            || ct_lower.contains("application/atom+xml")
+            || ct_lower.contains("application/feed+json");
 
-        if !is_html && !is_text {
+        if !is_html && !is_text && !is_feed {
             anyhow::bail!(
                 "Unsupported content type '{}' for URL '{}'. Expected HTML or text content.",
                 ct.split(';').next().unwrap_or(ct).trim(),
@@ -649,7 +1022,7 @@ pub(crate) fn validate_content_type_pub(content_type: Option<&str>, url: &str) -
 // ---------------------------------------------------------------------------
 
 fn spawn_push_fetches(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     html_body: &str,
     base_url: &str,
     enabled: bool,
@@ -869,4 +1242,279 @@ fn element_matches_node(el: &ElementRef, node: &SemanticNode) -> bool {
     }
 
     true
+}
+
+/// Compute exponential backoff delay with jitter.
+fn compute_backoff(attempt: u32, config: &crate::config::RetryConfig) -> u64 {
+    let base = config.initial_backoff_ms as f64
+        * config.backoff_factor.powi((attempt as i32) - 1);
+    // Add up to 30% jitter to spread retries
+    let jitter = fastrand::f64() * 0.3 * base;
+    let delay = (base + jitter) as u64;
+    delay.min(config.max_backoff_ms)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use url::Url;
+
+    fn parse(html: &str) -> Html {
+        Html::parse_document(html)
+    }
+
+    fn base() -> Url {
+        Url::parse("https://example.com/page").unwrap()
+    }
+
+    // ==================== parse_meta_refresh tests ====================
+
+    #[test]
+    fn test_meta_refresh_standard() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=https://other.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://other.com/".to_string()));
+    }
+
+    #[test]
+    fn test_meta_refresh_with_delay() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="5;url=https://other.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://other.com/".to_string()));
+    }
+
+    #[test]
+    fn test_meta_refresh_relative_url() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=/redirect"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://example.com/redirect".to_string()));
+    }
+
+    #[test]
+    fn test_meta_refresh_single_quotes() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url='https://other.com'"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://other.com/".to_string()));
+    }
+
+    #[test]
+    fn test_meta_refresh_double_quotes() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=&quot;https://other.com&quot;"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://other.com/".to_string()));
+    }
+
+    #[test]
+    fn test_meta_refresh_reload_only() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="30"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_meta_refresh_no_meta_tag() {
+        let html = r#"<html><head><title>Hello</title></head><body><p>Hi</p></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_meta_refresh_case_insensitive() {
+        let html = r#"<html><head><meta http-equiv="Refresh" content="0;url=https://other.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://other.com/".to_string()));
+    }
+
+    #[test]
+    fn test_meta_refresh_uppercase_url() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;URL=https://other.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://other.com/".to_string()));
+    }
+
+    #[test]
+    fn test_meta_refresh_space_around_equals() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0; url = https://other.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://other.com/".to_string()));
+    }
+
+    #[test]
+    fn test_meta_refresh_first_tag_wins() {
+        let html = r#"<html><head>
+            <meta http-equiv="refresh" content="0;url=https://first.com">
+            <meta http-equiv="refresh" content="0;url=https://second.com">
+        </head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://first.com/".to_string()));
+    }
+
+    // ==================== parse_js_navigation_href tests ====================
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_present() {
+        let html = r#"<html data-pardus-navigation-href="https://other.com"><head></head><body></body></html>"#;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, Some("https://other.com".to_string()));
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_empty() {
+        let html = r#"<html data-pardus-navigation-href=""><head></head><body></body></html>"#;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, None);
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_hash() {
+        let html = r##"<html data-pardus-navigation-href="#section"><head></head><body></body></html>"##;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, None);
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_javascript() {
+        let html = r#"<html data-pardus-navigation-href="javascript:void(0)"><head></head><body></body></html>"#;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, None);
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_missing() {
+        let html = r#"<html><head></head><body></body></html>"#;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, None);
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_relative() {
+        let html = r#"<html data-pardus-navigation-href="/new-page"><head></head><body></body></html>"#;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, Some("/new-page".to_string()));
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_whitespace_trimmed() {
+        let html = r#"<html data-pardus-navigation-href="  /trimmed  "><head></head><body></body></html>"#;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, Some("/trimmed".to_string()));
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_data_uri_skipped() {
+        let html = r#"<html data-pardus-navigation-href="data:text/html,test"><head></head><body></body></html>"#;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, Some("data:text/html,test".to_string()));
+    }
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn test_parse_js_nav_href_javascript_with_spaces() {
+        let html = r#"<html data-pardus-navigation-href="javascript: alert(1)"><head></head><body></body></html>"#;
+        let result = Page::parse_js_navigation_href(html);
+        assert_eq!(result, None);
+    }
+
+    // ==================== parse_refresh_content tests ====================
+
+    #[test]
+    fn test_refresh_content_with_query_params() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=https://example.com/redirect?foo=bar&baz=1"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://example.com/redirect?foo=bar&baz=1".to_string()));
+    }
+
+    #[test]
+    fn test_refresh_content_with_fragment() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=https://example.com/page#section"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://example.com/page#section".to_string()));
+    }
+
+    #[test]
+    fn test_refresh_content_empty_url_after_equals() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url="></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_refresh_content_url_only_no_semicolon() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="url=https://example.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_refresh_content_multiple_semicolons_in_url() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=/path?a=1;b=2"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://example.com/path?a=1;b=2".to_string()));
+    }
+
+    #[test]
+    fn test_refresh_content_zero_delay() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=https://example.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://example.com/".to_string()));
+    }
+
+    #[test]
+    fn test_refresh_content_large_delay() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="3600;url=https://example.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://example.com/".to_string()));
+    }
+
+    #[test]
+    fn test_refresh_content_non_http_meta_tag() {
+        let html = r#"<html><head><meta http-equiv="content-type" content="text/html"><meta http-equiv="refresh" content="0;url=https://other.com"></head><body></body></html>"#;
+        let result = Page::parse_meta_refresh(&parse(html), &base());
+        assert_eq!(result, Some("https://other.com/".to_string()));
+    }
+
+    // ==================== meta_refresh_url (Page method) tests ====================
+
+    #[test]
+    fn test_page_meta_refresh_url_with_refresh() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=https://other.com"></head><body></body></html>"#;
+        let page = Page::from_html(html, "https://example.com");
+        assert_eq!(page.meta_refresh_url(), Some("https://other.com/".to_string()));
+    }
+
+    #[test]
+    fn test_page_meta_refresh_url_without_refresh() {
+        let html = r#"<html><head><title>Hello</title></head><body><p>Hi</p></body></html>"#;
+        let page = Page::from_html(html, "https://example.com");
+        assert_eq!(page.meta_refresh_url(), None);
+    }
+
+    #[test]
+    fn test_page_meta_refresh_url_relative() {
+        let html = r#"<html><head><meta http-equiv="refresh" content="0;url=/new-path"></head><body></body></html>"#;
+        let page = Page::from_html(html, "https://example.com/page");
+        assert_eq!(page.meta_refresh_url(), Some("https://example.com/new-path".to_string()));
+    }
+
+    #[test]
+    fn test_page_meta_refresh_url_with_base_tag() {
+        let html = r#"<html><head><base href="https://cdn.example.com/"><meta http-equiv="refresh" content="0;url=/assets/page"></head><body></body></html>"#;
+        let page = Page::from_html(html, "https://example.com");
+        assert_eq!(page.meta_refresh_url(), Some("https://cdn.example.com/assets/page".to_string()));
+    }
+
+    // ==================== MAX_REDIRECT_DEPTH tests ====================
+
+    #[test]
+    fn test_max_redirect_depth_value() {
+        assert_eq!(Page::MAX_REDIRECT_DEPTH, 5);
+    }
 }

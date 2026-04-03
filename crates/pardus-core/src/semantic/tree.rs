@@ -42,11 +42,59 @@ pub struct SemanticNode {
     /// The input type attribute, if applicable (e.g., "password", "email", "search").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_type: Option<String>,
+    /// The placeholder text for input/textarea elements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// Whether the element has the `required` attribute.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub is_required: bool,
+    /// Whether the element has the `readonly` attribute.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub is_readonly: bool,
+    /// The current value attribute for input/textarea/select elements.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_value: Option<String>,
+    /// Whether a checkbox/radio has the `checked` attribute.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub is_checked: bool,
+    /// Available options for <select> elements (value, label, selected).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub options: Vec<SelectOption>,
+    /// The pattern attribute for input validation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// The minlength attribute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_length: Option<usize>,
+    /// The maxlength attribute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_length: Option<usize>,
+    /// The min attribute (numeric/date inputs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_val: Option<String>,
+    /// The max attribute (numeric/date inputs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_val: Option<String>,
+    /// The step attribute.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_val: Option<String>,
+    /// The autocomplete attribute hint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autocomplete: Option<String>,
     pub children: Vec<SemanticNode>,
 }
 
 fn is_false(v: &bool) -> bool {
     !v
+}
+
+/// An option within a <select> element.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelectOption {
+    pub value: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub is_selected: bool,
 }
 
 /// Statistics about the semantic tree.
@@ -231,6 +279,39 @@ fn count_nodes(node: &SemanticNode) -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn make_static_text(content: &str) -> SemanticNode {
+    SemanticNode {
+        role: SemanticRole::StaticText,
+        name: Some(content.to_string()),
+        tag: "#text".to_string(),
+        is_interactive: false,
+        is_disabled: false,
+        href: None,
+        action: None,
+        element_id: None,
+        selector: None,
+        input_type: None,
+        placeholder: None,
+        is_required: false,
+        is_readonly: false,
+        current_value: None,
+        is_checked: false,
+        options: Vec::new(),
+        pattern: None,
+        min_length: None,
+        max_length: None,
+        min_val: None,
+        max_val: None,
+        step_val: None,
+        autocomplete: None,
+        children: Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tree Builder
 // ---------------------------------------------------------------------------
 
@@ -257,6 +338,19 @@ impl<'a> TreeBuilder<'a> {
             element_id: None,
             selector: None,
             input_type: None,
+            placeholder: None,
+            is_required: false,
+            is_readonly: false,
+            current_value: None,
+            is_checked: false,
+            options: Vec::new(),
+            pattern: None,
+            min_length: None,
+            max_length: None,
+            min_val: None,
+            max_val: None,
+            step_val: None,
+            autocomplete: None,
             children: Vec::new(),
         };
 
@@ -266,6 +360,11 @@ impl<'a> TreeBuilder<'a> {
                 if let Some(child_el) = ElementRef::wrap(child_node) {
                     if let Some(node) = self.walk_element(&child_el) {
                         children.push(node);
+                    }
+                } else if let scraper::Node::Text(text) = child_node.value() {
+                    let content = text.trim();
+                    if !content.is_empty() {
+                        children.push(make_static_text(content));
                     }
                 }
             }
@@ -320,6 +419,11 @@ impl<'a> TreeBuilder<'a> {
                 if let Some(child) = self.walk_element(&child_el) {
                     child_nodes.push(child);
                 }
+            } else if let scraper::Node::Text(text) = child_node.value() {
+                let content = text.trim();
+                if !content.is_empty() {
+                    child_nodes.push(make_static_text(content));
+                }
             }
         }
 
@@ -373,6 +477,55 @@ impl<'a> TreeBuilder<'a> {
             None
         };
 
+        // Extract form element metadata
+        let is_form_element = matches!(tag_str, "input" | "textarea" | "select");
+        let placeholder = if is_form_element {
+            el.value().attr("placeholder").map(|s| s.to_string())
+        } else {
+            None
+        };
+        let is_required = el.value().attr("required").is_some();
+        let is_readonly = el.value().attr("readonly").is_some();
+        let current_value = if is_form_element {
+            el.value().attr("value").map(|s| s.to_string())
+        } else {
+            None
+        };
+        let is_checked = el.value().attr("checked").is_some();
+        let pattern = el.value().attr("pattern").map(|s| s.to_string());
+        let min_length = el
+            .value()
+            .attr("minlength")
+            .and_then(|s| s.parse::<usize>().ok());
+        let max_length = el
+            .value()
+            .attr("maxlength")
+            .and_then(|s| s.parse::<usize>().ok());
+        let min_val = el.value().attr("min").map(|s| s.to_string());
+        let max_val = el.value().attr("max").map(|s| s.to_string());
+        let step_val = el.value().attr("step").map(|s| s.to_string());
+        let autocomplete = el.value().attr("autocomplete").map(|s| s.to_string());
+
+        // Extract select options
+        let options = if tag_str == "select" {
+            let opt_selector = Selector::parse("option").unwrap();
+            el.select(&opt_selector)
+                .map(|opt| {
+                    let val = opt.value().attr("value").unwrap_or("");
+                    let label = opt.text().collect::<String>();
+                    let label = label.trim().to_string();
+                    let selected = opt.value().attr("selected").is_some();
+                    SelectOption {
+                        value: val.to_string(),
+                        label,
+                        is_selected: selected,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         Some(SemanticNode {
             role,
             name,
@@ -384,6 +537,19 @@ impl<'a> TreeBuilder<'a> {
             element_id,
             selector: Some(selector),
             input_type,
+            placeholder,
+            is_required,
+            is_readonly,
+            current_value,
+            is_checked,
+            options,
+            pattern,
+            min_length,
+            max_length,
+            min_val,
+            max_val,
+            step_val,
+            autocomplete,
             children: child_nodes,
         })
     }
@@ -445,6 +611,19 @@ impl<'a> TreeBuilder<'a> {
             element_id: None,
             selector: Some(selector),
             input_type: None,
+            placeholder: None,
+            is_required: false,
+            is_readonly: false,
+            current_value: None,
+            is_checked: false,
+            options: Vec::new(),
+            pattern: None,
+            min_length: None,
+            max_length: None,
+            min_val: None,
+            max_val: None,
+            step_val: None,
+            autocomplete: None,
             children: child_nodes,
         })
     }
@@ -490,7 +669,7 @@ impl<'a> TreeBuilder<'a> {
         let tag = el.value().name();
         if matches!(
             tag,
-            "a" | "button" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "summary"
+            "a" | "button" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "summary" | "span"
         ) {
             let text = el.text().collect::<String>().trim().to_string();
             if !text.is_empty() {
@@ -806,20 +985,18 @@ fn build_structural_selector(el: &ElementRef) -> String {
 }
 
 /// Count the 1-based position of this element among its parent's children.
+///
+/// This counts ALL element siblings (regardless of tag), matching CSS `:nth-child()` semantics.
 fn count_element_position(el: &ElementRef) -> usize {
     if let Some(parent) = el.parent().and_then(ElementRef::wrap) {
-        let target_id = el.value().attr("id");
-        let target_name = el.value().name();
         let mut count = 0;
 
         for child in parent.children() {
-            if let Some(child_el) = ElementRef::wrap(child) {
+            if ElementRef::wrap(child).is_some() {
                 count += 1;
-                if child_el.value().name() == target_name
-                    && child_el.value().attr("id") == target_id
-                {
-                    return count;
-                }
+            }
+            if child == **el {
+                return count;
             }
         }
     }

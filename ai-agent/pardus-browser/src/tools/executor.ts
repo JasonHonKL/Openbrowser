@@ -31,6 +31,14 @@ interface ToolCallArgs {
   // Storage args
   storage_type?: 'localStorage' | 'sessionStorage' | 'both';
   key?: string;
+  // Auto-fill args
+  fields?: Array<{ key: string; value: string }>;
+  // Wait args
+  condition?: 'contentLoaded' | 'contentStable' | 'networkIdle' | 'minInteractive' | 'selector';
+  selector?: string;
+  min_count?: number;
+  timeout_ms?: number;
+  interval_ms?: number;
 }
 
 /**
@@ -296,6 +304,12 @@ export class ToolExecutor {
         return this.handleDeleteStorage(typedArgs);
       case 'browser_clear_storage':
         return this.handleClearStorage(typedArgs);
+      case 'browser_get_action_plan':
+        return this.handleGetActionPlan(typedArgs);
+      case 'browser_auto_fill':
+        return this.handleAutoFill(typedArgs);
+      case 'browser_wait':
+        return this.handleWait(typedArgs);
       case 'browser_close':
         return this.handleClose(typedArgs);
       case 'browser_list':
@@ -866,6 +880,196 @@ export class ToolExecutor {
         success: true,
         content: `Cleared ${args.storage_type}`,
       };
+    } catch (error) {
+      return {
+        success: false,
+        content: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async handleGetActionPlan(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return {
+        success: false,
+        content: '',
+        error: `Browser instance "${args.instance_id}" not found`,
+      };
+    }
+
+    try {
+      const result = await instance.getActionPlan();
+
+      if (!result.success) {
+        return {
+          success: false,
+          content: '',
+          error: result.error || 'Failed to get action plan',
+        };
+      }
+
+      const plan = result.actionPlan;
+      if (!plan) {
+        return { success: true, content: '## Action Plan\n\nNo suggestions for current page.' };
+      }
+
+      const pageTypeLabel = plan.page_type
+        .replace(/([A-Z])/g, ' $1')
+        .trim()
+        .replace(/^./, (c) => c.toUpperCase());
+
+      let content = `## Action Plan\n\n` +
+        `- **URL**: ${plan.url}\n` +
+        `- **Page Type**: ${pageTypeLabel}\n` +
+        `- **Interactive Elements**: ${plan.interactive_count}\n` +
+        `- **Has Forms**: ${plan.has_forms ? 'Yes' : 'No'}\n` +
+        `- **Has Pagination**: ${plan.has_pagination ? 'Yes' : 'No'}\n`;
+
+      if (plan.suggestions.length > 0) {
+        content += `\n### Suggested Actions\n\n`;
+        for (const s of plan.suggestions) {
+          const pct = Math.round(s.confidence * 100);
+          content += `- **${s.action_type}** (${pct}%): ${s.reason}`;
+          if (s.label) content += ` — ${s.label}`;
+          if (s.element_id) content += ` [#${s.element_id}]`;
+          if (s.selector) content += ` (${s.selector})`;
+          content += '\n';
+        }
+      } else {
+        content += '\nNo suggested actions for this page.';
+      }
+
+      return { success: true, content };
+    } catch (error) {
+      return {
+        success: false,
+        content: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async handleAutoFill(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.fields || args.fields.length === 0) {
+      return { success: false, content: '', error: 'Missing fields (array of {key, value} pairs)' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return {
+        success: false,
+        content: '',
+        error: `Browser instance "${args.instance_id}" not found`,
+      };
+    }
+
+    try {
+      const result = await instance.autoFill(args.fields);
+
+      if (!result.success) {
+        return {
+          success: false,
+          content: '',
+          error: result.error || 'Auto-fill failed',
+        };
+      }
+
+      let content = '## Auto-Fill Result\n\n';
+
+      if (result.filledFields && result.filledFields.length > 0) {
+        content += `### Filled Fields (${result.filledFields.length})\n\n`;
+        for (const f of result.filledFields) {
+          content += `- **${f.field_name}** = "${f.value}" (matched by ${f.matched_by})\n`;
+        }
+      }
+
+      if (result.unmatchedFields && result.unmatchedFields.length > 0) {
+        content += `\n### Unmatched Fields (${result.unmatchedFields.length})\n\n`;
+        for (const f of result.unmatchedFields) {
+          const req = f.required ? ' [required]' : '';
+          content += `- ${f.field_type || 'unknown'}${req}`;
+          if (f.field_name) content += `: "${f.field_name}"`;
+          if (f.label) content += ` (label: "${f.label}")`;
+          if (f.placeholder) content += ` (placeholder: "${f.placeholder}")`;
+          content += '\n';
+        }
+      }
+
+      if ((!result.filledFields || result.filledFields.length === 0) &&
+          (!result.unmatchedFields || result.unmatchedFields.length === 0)) {
+        content += 'No form fields found on the current page.';
+      }
+
+      return { success: true, content };
+    } catch (error) {
+      return {
+        success: false,
+        content: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async handleWait(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.condition) {
+      return { success: false, content: '', error: 'Missing condition (contentLoaded, contentStable, networkIdle, minInteractive, or selector)' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return {
+        success: false,
+        content: '',
+        error: `Browser instance "${args.instance_id}" not found`,
+      };
+    }
+
+    try {
+      const validConditions = ['contentLoaded', 'contentStable', 'networkIdle', 'minInteractive', 'selector'] as const;
+      const condition = args.condition as typeof validConditions[number];
+      if (!validConditions.includes(condition)) {
+        return { success: false, content: '', error: `Invalid condition: ${args.condition}` };
+      }
+
+      if (condition === 'selector' && !args.selector) {
+        return { success: false, content: '', error: 'selector is required when condition is "selector"' };
+      }
+
+      const result = await instance.wait(condition, {
+        selector: args.selector,
+        minCount: args.min_count,
+        timeoutMs: args.timeout_ms,
+        intervalMs: args.interval_ms,
+      });
+
+      if (!result.success) {
+        return {
+          success: false,
+          content: '',
+          error: result.error || 'Wait failed',
+        };
+      }
+
+      const status = result.satisfied ? 'Satisfied' : 'Not satisfied';
+      const reason = result.reason ? ` (${result.reason})` : '';
+      const content = `## Wait Result\n\n` +
+        `- **Condition**: ${result.condition}\n` +
+        `- **Status**: ${status}${reason}\n` +
+        `- **Timeout**: ${args.timeout_ms ?? 10000}ms`;
+
+      return { success: true, content };
     } catch (error) {
       return {
         success: false,

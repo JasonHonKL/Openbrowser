@@ -4,7 +4,7 @@
 //! HTTP/2 connection and buffer the pushed response data into a [`PushCache`].
 //!
 //! This module is behind the `h2-push` feature flag. It uses the `h2` crate
-//! directly to handle PUSH_PROMISE frames, since `reqwest` does not expose this
+//! directly to handle PUSH_PROMISE frames, since `rquest` does not expose this
 //! functionality.
 //!
 //! ## Important

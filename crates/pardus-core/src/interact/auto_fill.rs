@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::page::Page;
 use crate::interact::form::FormState;
+use crate::page::Page;
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 
@@ -13,7 +13,9 @@ pub struct AutoFillValues {
 
 impl AutoFillValues {
     pub fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
     pub fn set(mut self, key: &str, value: &str) -> Self {
@@ -27,21 +29,21 @@ impl AutoFillValues {
 }
 
 /// Result of auto-filling a form.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AutoFillResult {
     pub form_state: FormState,
     pub filled_fields: Vec<AutoFillFieldResult>,
     pub unmatched_fields: Vec<UnmatchedField>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AutoFillFieldResult {
     pub field_name: String,
     pub value: String,
     pub matched_by: MatchMethod,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct UnmatchedField {
     pub field_name: Option<String>,
     pub field_type: String,
@@ -50,7 +52,7 @@ pub struct UnmatchedField {
     pub required: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub enum MatchMethod {
     ByName,
     ByLabel,
@@ -92,7 +94,13 @@ pub fn auto_fill(values: &AutoFillValues, page: &Page) -> AutoFillResult {
         let field_type = input.field_type.clone();
         let required = input.required;
 
-        let value = resolve_value(values, &field_name, &field_label, &field_placeholder, &field_type);
+        let value = resolve_value(
+            values,
+            &field_name,
+            &field_label,
+            &field_placeholder,
+            &field_type,
+        );
 
         if let Some(value) = value {
             if !field_name.is_empty() {
@@ -139,7 +147,11 @@ pub fn auto_fill(values: &AutoFillValues, page: &Page) -> AutoFillResult {
         }
     }
 
-    AutoFillResult { form_state, filled_fields, unmatched_fields }
+    AutoFillResult {
+        form_state,
+        filled_fields,
+        unmatched_fields,
+    }
 }
 
 /// Resolve a value for a field using multiple matching strategies.
@@ -181,9 +193,18 @@ fn resolve_value(
     match field_type {
         "email" => values.get("email").map(|s| s.to_string()),
         "password" => values.get("password").map(|s| s.to_string()),
-        "tel" => values.get("phone").or_else(|| values.get("telephone")).map(|s| s.to_string()),
-        "url" => values.get("website").or_else(|| values.get("url")).map(|s| s.to_string()),
-        "search" => values.get("query").or_else(|| values.get("search").or_else(|| values.get("q"))).map(|s| s.to_string()),
+        "tel" => values
+            .get("phone")
+            .or_else(|| values.get("telephone"))
+            .map(|s| s.to_string()),
+        "url" => values
+            .get("website")
+            .or_else(|| values.get("url"))
+            .map(|s| s.to_string()),
+        "search" => values
+            .get("query")
+            .or_else(|| values.get("search").or_else(|| values.get("q")))
+            .map(|s| s.to_string()),
         "hidden" => None,
         _ => None,
     }
@@ -196,7 +217,10 @@ pub fn validate_auto_fill(result: &AutoFillResult) -> Vec<(String, ValidationSta
     for unmatched in &result.unmatched_fields {
         if unmatched.required {
             issues.push((
-                unmatched.field_name.clone().unwrap_or_else(|| "unknown".to_string()),
+                unmatched
+                    .field_name
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 ValidationStatus::EmptyRequired,
             ));
         }
@@ -205,17 +229,14 @@ pub fn validate_auto_fill(result: &AutoFillResult) -> Vec<(String, ValidationSta
     for filled in &result.filled_fields {
         let lower_type = filled.field_name.to_lowercase();
         if lower_type.contains("email") && !is_valid_email(&filled.value) {
-            issues.push((
-                filled.field_name.clone(),
-                ValidationStatus::EmailInvalid,
-            ));
+            issues.push((filled.field_name.clone(), ValidationStatus::EmailInvalid));
         }
-        if lower_type.contains("url") || lower_type.contains("website") || lower_type.contains("link") {
+        if lower_type.contains("url")
+            || lower_type.contains("website")
+            || lower_type.contains("link")
+        {
             if !is_valid_url(&filled.value) {
-                issues.push((
-                    filled.field_name.clone(),
-                    ValidationStatus::UrlInvalid,
-                ));
+                issues.push((filled.field_name.clone(), ValidationStatus::UrlInvalid));
             }
         }
     }
@@ -246,10 +267,15 @@ fn collect_all_inputs(html: &Html) -> Vec<InputInfo> {
         for form_el in html.select(&form_sel) {
             if let Ok(input_sel) = Selector::parse("input, select, textarea") {
                 for field_el in form_el.select(&input_sel) {
-                    let field_type = field_el.value().attr("type")
+                    let field_type = field_el
+                        .value()
+                        .attr("type")
                         .unwrap_or_else(|| field_el.value().name())
                         .to_string();
-                    if matches!(field_type.as_str(), "submit" | "reset" | "button" | "image" | "hidden") {
+                    if matches!(
+                        field_type.as_str(),
+                        "submit" | "reset" | "button" | "image" | "hidden"
+                    ) {
                         continue;
                     }
 
@@ -259,7 +285,13 @@ fn collect_all_inputs(html: &Html) -> Vec<InputInfo> {
 
                     let label = find_label_for_element(&form_el, name.as_deref());
 
-                    inputs.push(InputInfo { name, field_type, label, placeholder, required });
+                    inputs.push(InputInfo {
+                        name,
+                        field_type,
+                        label,
+                        placeholder,
+                        required,
+                    });
                 }
             }
         }
@@ -267,10 +299,15 @@ fn collect_all_inputs(html: &Html) -> Vec<InputInfo> {
 
     if let Ok(input_sel) = Selector::parse("input, select, textarea") {
         for field_el in html.select(&input_sel) {
-            let field_type = field_el.value().attr("type")
+            let field_type = field_el
+                .value()
+                .attr("type")
                 .unwrap_or_else(|| field_el.value().name())
                 .to_string();
-            if matches!(field_type.as_str(), "submit" | "reset" | "button" | "image" | "hidden") {
+            if matches!(
+                field_type.as_str(),
+                "submit" | "reset" | "button" | "image" | "hidden"
+            ) {
                 continue;
             }
             let name = field_el.value().attr("name").map(|s| s.to_string());
@@ -282,7 +319,13 @@ fn collect_all_inputs(html: &Html) -> Vec<InputInfo> {
 
             let placeholder = field_el.value().attr("placeholder").map(|s| s.to_string());
             let required = field_el.value().attr("required").is_some();
-            inputs.push(InputInfo { name, field_type, label: None, placeholder, required });
+            inputs.push(InputInfo {
+                name,
+                field_type,
+                label: None,
+                placeholder,
+                required,
+            });
         }
     }
 
@@ -312,7 +355,8 @@ mod tests {
 
     #[test]
     fn test_auto_fill_by_name() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form action="/login" method="post">
                     <input type="text" name="username">
@@ -320,7 +364,8 @@ mod tests {
                     <button type="submit">Login</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
         let values = AutoFillValues::new()
@@ -337,7 +382,8 @@ mod tests {
 
     #[test]
     fn test_auto_fill_partial_match() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="text" name="email" placeholder="Enter your email">
@@ -345,11 +391,11 @@ mod tests {
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("email", "user@example.com");
+        let values = AutoFillValues::new().set("email", "user@example.com");
 
         let result = auto_fill(&values, &page);
 
@@ -359,18 +405,19 @@ mod tests {
 
     #[test]
     fn test_auto_fill_by_type_fallback() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="email" name="contact">
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("email", "user@example.com");
+        let values = AutoFillValues::new().set("email", "user@example.com");
 
         let result = auto_fill(&values, &page);
 
@@ -380,18 +427,19 @@ mod tests {
 
     #[test]
     fn test_validate_email() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="email" name="user_email" required>
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("user_email", "not-an-email");
+        let values = AutoFillValues::new().set("user_email", "not-an-email");
 
         let result = auto_fill(&values, &page);
         let issues = validate_auto_fill(&result);
@@ -402,18 +450,19 @@ mod tests {
 
     #[test]
     fn test_validate_valid_email() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="email" name="user_email" required>
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("user_email", "user@example.com");
+        let values = AutoFillValues::new().set("user_email", "user@example.com");
 
         let result = auto_fill(&values, &page);
         let issues = validate_auto_fill(&result);
@@ -423,18 +472,19 @@ mod tests {
 
     #[test]
     fn test_auto_fill_values_case_insensitive() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="text" name="UserName">
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("USERNAME", "john");
+        let values = AutoFillValues::new().set("USERNAME", "john");
 
         let result = auto_fill(&values, &page);
 
@@ -444,13 +494,15 @@ mod tests {
 
     #[test]
     fn test_auto_fill_empty_form() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
         let values = AutoFillValues::new();
@@ -473,18 +525,19 @@ mod tests {
 
     #[test]
     fn test_auto_fill_password_type_fallback() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="password" name="pw_field">
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("password", "secret");
+        let values = AutoFillValues::new().set("password", "secret");
 
         let result = auto_fill(&values, &page);
 
@@ -495,18 +548,19 @@ mod tests {
 
     #[test]
     fn test_auto_fill_tel_type_fallback() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="tel" name="mobile">
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("phone", "555-1234");
+        let values = AutoFillValues::new().set("phone", "555-1234");
 
         let result = auto_fill(&values, &page);
 
@@ -516,18 +570,19 @@ mod tests {
 
     #[test]
     fn test_auto_fill_url_type_fallback() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="url" name="homepage">
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("website", "https://example.com");
+        let values = AutoFillValues::new().set("website", "https://example.com");
 
         let result = auto_fill(&values, &page);
 
@@ -537,7 +592,8 @@ mod tests {
 
     #[test]
     fn test_auto_fill_hidden_ignored() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="hidden" name="csrf_token" value="abc123">
@@ -545,7 +601,8 @@ mod tests {
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
         let values = AutoFillValues::new().set("visible", "hello");
@@ -557,18 +614,19 @@ mod tests {
 
     #[test]
     fn test_auto_fill_textarea() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <textarea name="comment"></textarea>
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("comment", "Hello world");
+        let values = AutoFillValues::new().set("comment", "Hello world");
 
         let result = auto_fill(&values, &page);
 
@@ -578,7 +636,8 @@ mod tests {
 
     #[test]
     fn test_auto_fill_select() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <select name="country">
@@ -588,11 +647,11 @@ mod tests {
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("country", "uk");
+        let values = AutoFillValues::new().set("country", "uk");
 
         let result = auto_fill(&values, &page);
 
@@ -602,14 +661,16 @@ mod tests {
 
     #[test]
     fn test_validate_required_empty_field() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="text" name="mandatory" required>
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
         let values = AutoFillValues::new();
@@ -623,21 +684,24 @@ mod tests {
 
     #[test]
     fn test_validate_optional_empty_no_error() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="text" name="optional">
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
         let values = AutoFillValues::new();
         let result = auto_fill(&values, &page);
         let issues = validate_auto_fill(&result);
 
-        let empty_required: Vec<_> = issues.iter()
+        let empty_required: Vec<_> = issues
+            .iter()
             .filter(|(_, s)| matches!(s, ValidationStatus::EmptyRequired))
             .collect();
         assert!(empty_required.is_empty());
@@ -645,18 +709,19 @@ mod tests {
 
     #[test]
     fn test_validate_url_invalid() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="url" name="my_url" required>
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("my_url", "not-a-url");
+        let values = AutoFillValues::new().set("my_url", "not-a-url");
 
         let result = auto_fill(&values, &page);
         let issues = validate_auto_fill(&result);
@@ -667,23 +732,25 @@ mod tests {
 
     #[test]
     fn test_validate_url_valid() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="url" name="my_url" required>
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("my_url", "https://example.com");
+        let values = AutoFillValues::new().set("my_url", "https://example.com");
 
         let result = auto_fill(&values, &page);
         let issues = validate_auto_fill(&result);
 
-        let url_issues: Vec<_> = issues.iter()
+        let url_issues: Vec<_> = issues
+            .iter()
             .filter(|(_, s)| matches!(s, ValidationStatus::UrlInvalid))
             .collect();
         assert!(url_issues.is_empty());
@@ -691,7 +758,8 @@ mod tests {
 
     #[test]
     fn test_auto_fill_multiple_forms() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form action="/login">
                     <input type="text" name="user">
@@ -700,7 +768,8 @@ mod tests {
                     <input type="text" name="query">
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
         let values = AutoFillValues::new()
@@ -730,18 +799,19 @@ mod tests {
 
     #[test]
     fn test_auto_fill_result_matched_by_name() {
-        let html = Html::parse_document(r#"
+        let html = Html::parse_document(
+            r#"
             <html><body>
                 <form>
                     <input type="text" name="first_name">
                     <button type="submit">Go</button>
                 </form>
             </body></html>
-        "#);
+        "#,
+        );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("first_name", "John");
+        let values = AutoFillValues::new().set("first_name", "John");
 
         let result = auto_fill(&values, &page);
 
@@ -753,12 +823,11 @@ mod tests {
         let html = Html::parse_document(
             r#"<html><body>
                 <input type="text" name="orphan_field">
-            </body></html>"#
+            </body></html>"#,
         );
         let page = Page::from_html(&html.html(), "https://example.com");
 
-        let values = AutoFillValues::new()
-            .set("orphan_field", "value");
+        let values = AutoFillValues::new().set("orphan_field", "value");
 
         let result = auto_fill(&values, &page);
 

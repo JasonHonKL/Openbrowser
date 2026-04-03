@@ -296,19 +296,27 @@ pub fn op_clear_timer(state: &mut OpState, id: u32) {
 
 // ==================== MutationObserver Ops ====================
 
-#[op2(fast)]
+#[op2]
 pub fn op_register_observer(
     state: &mut OpState,
-    target_node_id: u32,
+    #[smi] target_node_id: u32,
     child_list: bool,
     attributes: bool,
     subtree: bool,
+    character_data: bool,
+    attribute_old_value: bool,
+    character_data_old_value: bool,
+    #[serde] attribute_filter: Vec<String>,
 ) -> u32 {
     let dom = state.borrow::<Rc<RefCell<DomDocument>>>().clone();
     let mut init = super::dom::MutationObserverInit::default();
     init.child_list = child_list;
     init.attributes = attributes;
     init.subtree = subtree;
+    init.character_data = character_data;
+    init.attribute_old_value = attribute_old_value;
+    init.character_data_old_value = character_data_old_value;
+    init.attribute_filter = attribute_filter;
     dom.borrow_mut().register_observer(target_node_id, init)
 }
 
@@ -329,4 +337,13 @@ pub fn op_take_mutation_records(state: &mut OpState) -> Vec<super::dom::Mutation
 pub fn op_has_observers(state: &mut OpState) -> bool {
     let dom = state.borrow::<Rc<RefCell<DomDocument>>>().clone();
     dom.borrow().has_observers()
+}
+
+#[op2]
+#[serde]
+pub fn op_drain_pending_mutations(
+    state: &mut OpState,
+) -> Vec<(u32, Vec<super::dom::MutationRecord>)> {
+    let dom = state.borrow::<Rc<RefCell<DomDocument>>>().clone();
+    dom.borrow_mut().drain_all_pending_mutations()
 }

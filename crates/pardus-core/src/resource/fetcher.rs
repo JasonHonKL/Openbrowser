@@ -4,7 +4,7 @@ use super::ResourceConfig;
 use crate::cache::{CachedResource, ResourceCache};
 use crate::push::PushCache;
 use bytes::Bytes;
-use reqwest::header::HeaderMap;
+use rquest::header::HeaderMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{trace, instrument};
@@ -87,13 +87,13 @@ impl FetchResult {
 
 /// High-performance resource fetcher
 pub struct ResourceFetcher {
-    client: reqwest::Client,
+    client: rquest::Client,
     #[allow(dead_code)]
     config: ResourceConfig,
 }
 
 impl ResourceFetcher {
-    pub fn new(client: reqwest::Client, config: ResourceConfig) -> Self {
+    pub fn new(client: rquest::Client, config: ResourceConfig) -> Self {
         Self { client, config }
     }
 
@@ -106,7 +106,7 @@ impl ResourceFetcher {
             Ok(response) => {
                 let status = response.status().as_u16();
                 let content_type = response.headers()
-                    .get(reqwest::header::CONTENT_TYPE)
+                    .get(rquest::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
 
@@ -138,7 +138,7 @@ impl ResourceFetcher {
             Ok(response) => {
                 let status = response.status().as_u16();
                 let content_type = response.headers()
-                    .get(reqwest::header::CONTENT_TYPE)
+                    .get(rquest::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
 
@@ -172,7 +172,7 @@ impl ResourceFetcher {
             Ok(response) => {
                 let status = response.status().as_u16();
                 let content_type = response.headers()
-                    .get(reqwest::header::CONTENT_TYPE)
+                    .get(rquest::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
 
@@ -218,7 +218,7 @@ impl ResourceFetcher {
     pub async fn content_length(&self, url: &str) -> Option<usize> {
         match self.client.head(url).send().await {
             Ok(response) => response.headers()
-                .get(reqwest::header::CONTENT_LENGTH)
+                .get(rquest::header::CONTENT_LENGTH)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse().ok()),
             Err(_) => None,
@@ -258,7 +258,7 @@ pub struct CachedFetcher {
 }
 
 impl CachedFetcher {
-    pub fn new(client: reqwest::Client, config: ResourceConfig, cache: Arc<ResourceCache>) -> Self {
+    pub fn new(client: rquest::Client, config: ResourceConfig, cache: Arc<ResourceCache>) -> Self {
         Self {
             fetcher: ResourceFetcher::new(client, config),
             cache,

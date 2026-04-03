@@ -29,6 +29,15 @@ describe('Prompts', () => {
       assert.ok(SYSTEM_PROMPT.includes('browser_close'));
       assert.ok(SYSTEM_PROMPT.includes('browser_list'));
       assert.ok(SYSTEM_PROMPT.includes('browser_get_state'));
+      assert.ok(SYSTEM_PROMPT.includes('browser_get_action_plan'));
+      assert.ok(SYSTEM_PROMPT.includes('browser_auto_fill'));
+      assert.ok(SYSTEM_PROMPT.includes('browser_wait'));
+      assert.ok(SYSTEM_PROMPT.includes('browser_get_cookies'));
+      assert.ok(SYSTEM_PROMPT.includes('browser_set_cookie'));
+    });
+
+    it('should mention correct tool count', () => {
+      assert.ok(SYSTEM_PROMPT.includes('19 browser tools'));
     });
 
     it('should have workflow steps', () => {

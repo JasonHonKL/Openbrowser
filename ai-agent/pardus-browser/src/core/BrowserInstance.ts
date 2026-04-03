@@ -16,6 +16,9 @@ import {
   BrowserSetStorageResult,
   BrowserDeleteStorageResult,
   BrowserClearStorageResult,
+  BrowserGetActionPlanResult,
+  BrowserAutoFillResult,
+  BrowserWaitResult,
 } from './types.js';
 
 interface CDPResponse {
@@ -612,6 +615,51 @@ export class BrowserInstance extends EventEmitter {
     }
   }
 
+  async getActionPlan(): Promise<BrowserGetActionPlanResult> {
+    try {
+      const result = await this.sendCommand('Pardus.getActionPlan', {}) as {
+        actionPlan?: BrowserGetActionPlanResult['actionPlan'];
+      };
+
+      return {
+        success: true,
+        actionPlan: result.actionPlan,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async autoFill(fields: Array<{ key: string; value: string }>): Promise<BrowserAutoFillResult> {
+    try {
+      const fieldsMap: Record<string, string> = {};
+      for (const { key, value } of fields) {
+        fieldsMap[key] = value;
+      }
+
+      const result = await this.sendCommand('Pardus.autoFill', {
+        fields: fieldsMap,
+      }) as {
+        filled_fields?: BrowserAutoFillResult['filledFields'];
+        unmatched_fields?: BrowserAutoFillResult['unmatchedFields'];
+      };
+
+      return {
+        success: true,
+        filledFields: result.filled_fields,
+        unmatchedFields: result.unmatched_fields,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   async getCurrentState(): Promise<{ url: string; title?: string; markdown: string }> {
     try {
       const [history, treeResult] = await Promise.all([
@@ -636,6 +684,39 @@ export class BrowserInstance extends EventEmitter {
         url: this.currentUrl ?? '',
         title: '',
         markdown: '',
+      };
+    }
+  }
+
+  async wait(
+    condition: 'contentLoaded' | 'contentStable' | 'networkIdle' | 'minInteractive' | 'selector',
+    options?: { selector?: string; minCount?: number; timeoutMs?: number; intervalMs?: number }
+  ): Promise<BrowserWaitResult> {
+    try {
+      const result = await this.sendCommand('Pardus.wait', {
+        condition,
+        selector: options?.selector,
+        minCount: options?.minCount,
+        timeoutMs: options?.timeoutMs ?? 10000,
+        intervalMs: options?.intervalMs ?? 500,
+      }, options?.timeoutMs ?? 10000) as {
+        satisfied: boolean;
+        condition: string;
+        reason?: string;
+      };
+
+      return {
+        success: true,
+        satisfied: result.satisfied,
+        condition: result.condition,
+        reason: result.reason,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        satisfied: false,
+        condition,
+        error: error instanceof Error ? error.message : String(error),
       };
     }
   }

@@ -96,14 +96,14 @@ pub enum ScreenshotError {
 /// Provider that sends page state to an external HTTP endpoint.
 pub struct HttpScreenshotProvider {
     endpoint: String,
-    client: reqwest::Client,
+    client: rquest::Client,
     timeout: Duration,
 }
 
 impl HttpScreenshotProvider {
     /// Create a new HttpScreenshotProvider with a shared HTTP client.
     /// The client should be configured with connection pooling settings.
-    pub fn new(client: reqwest::Client, endpoint: &str, timeout_ms: u64) -> Self {
+    pub fn new(client: rquest::Client, endpoint: &str, timeout_ms: u64) -> Self {
         Self {
             endpoint: endpoint.to_string(),
             client,

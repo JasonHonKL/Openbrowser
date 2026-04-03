@@ -1,0 +1,25 @@
+[package]
+name = "pardus-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pardus-server"
+path = "src/main.rs"
+
+[dependencies]
+pardus-core = { path = "../pardus-core", default-features = false, features = [] }
+pardus-debug = { path = "../pardus-debug" }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower = { version = "0.5" }
+include_dir = "0.7"
+anyhow = { workspace = true }
+futures-util = { workspace = true }

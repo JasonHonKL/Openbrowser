@@ -12,6 +12,7 @@ pub mod extension;
 pub mod fetch;
 pub mod ops;
 pub mod runtime;
+pub mod snapshot;
 pub mod sse;
 pub mod timer;
 

@@ -114,7 +114,7 @@ impl FrameTree {
         root_html: Html,
         root_url: &str,
         base_url: &str,
-        http_client: &reqwest::Client,
+        http_client: &rquest::Client,
         max_depth: usize,
     ) -> Self {
         let root_html_str = root_html.html().to_string();
@@ -139,7 +139,7 @@ impl FrameTree {
         url: &str,
         base_url: &str,
         parent_id: Option<FrameId>,
-        http_client: &reqwest::Client,
+        http_client: &rquest::Client,
         remaining_depth: usize,
     ) -> FrameData {
         let depth = id.depth();
@@ -291,7 +291,7 @@ fn discover_iframes(parent_html: &Html) -> Vec<(usize, DiscoveredFrame)> {
 fn fetch_children<'a>(
     discovered: Vec<(usize, DiscoveredFrame)>,
     parent_base_url: &'a str,
-    http_client: &'a reqwest::Client,
+    http_client: &'a rquest::Client,
     remaining_depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<FrameData>> + Send + 'a>> {
     Box::pin(async move {
@@ -313,7 +313,7 @@ async fn build_child_frame(
     id: FrameId,
     frame_info: DiscoveredFrame,
     parent_base_url: &str,
-    http_client: &reqwest::Client,
+    http_client: &rquest::Client,
     remaining_depth: usize,
 ) -> FrameData {
     let parent_id = id.parent();
@@ -407,7 +407,7 @@ async fn build_child_frame(
 
 async fn fetch_frame_content(
     url: &str,
-    client: &reqwest::Client,
+    client: &rquest::Client,
 ) -> anyhow::Result<(String, String)> {
     let response = client.get(url).send().await?;
 

@@ -159,12 +159,13 @@ pub fn select_option(
 /// Click on an element.
 ///
 /// - Links: Follow href via HTTP GET
-/// - Submit buttons: Submit the associated form
+/// - Submit buttons: Submit the associated form using accumulated form_state
 /// - Other buttons: Returns ElementNotFound (no JS execution)
 pub async fn click(
     app: &Arc<App>,
     page: &Page,
     handle: &ElementHandle,
+    form_state: &FormState,
 ) -> anyhow::Result<InteractionResult> {
     if handle.is_disabled {
         return Ok(InteractionResult::ElementNotFound {
@@ -175,7 +176,7 @@ pub async fn click(
 
     match handle.action.as_deref() {
         Some("navigate") => click_link(app, page, handle).await,
-        Some("click") => click_button(app, page, handle).await,
+        Some("click") => click_button(app, page, handle, form_state).await,
         Some(action) => Ok(InteractionResult::ElementNotFound {
             selector: handle.selector.clone(),
             reason: format!("element action '{}' is not clickable", action),
@@ -241,6 +242,7 @@ async fn click_button(
     app: &Arc<App>,
     page: &Page,
     handle: &ElementHandle,
+    form_state: &FormState,
 ) -> anyhow::Result<InteractionResult> {
     // Find the element in the HTML
     let el = match Selector::parse(&handle.selector)
@@ -260,8 +262,7 @@ async fn click_button(
     let form_selector = find_enclosing_form(&el);
     match form_selector {
         Some(form_sel) => {
-            let state = FormState::new();
-            super::form::submit_form(app, page, &form_sel, &state).await
+            super::form::submit_form(app, page, &form_sel, form_state).await
         }
         None => Ok(InteractionResult::ElementNotFound {
             selector: handle.selector.clone(),

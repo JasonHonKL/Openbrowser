@@ -13,7 +13,7 @@ pub struct CacheHit {
 }
 
 pub async fn fetch_subresources(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     log: &Arc<std::sync::Mutex<NetworkLog>>,
     concurrency: usize,
 ) {
@@ -26,7 +26,7 @@ pub async fn fetch_subresources(
 /// If it returns `Some(CacheHit)`, the resource is marked as fetched in
 /// the network log without making an HTTP request.
 pub async fn fetch_subresources_with_cache<F>(
-    client: &reqwest::Client,
+    client: &rquest::Client,
     log: &Arc<std::sync::Mutex<NetworkLog>>,
     concurrency: usize,
     cache_check: Option<F>,
@@ -142,8 +142,8 @@ mod tests {
     use super::*;
     use crate::record::{Initiator, ResourceType};
 
-    fn make_client() -> reqwest::Client {
-        reqwest::Client::builder()
+    fn make_client() -> rquest::Client {
+        rquest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
             .build()
             .unwrap()

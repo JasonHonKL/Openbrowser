@@ -10,19 +10,13 @@ use crate::semantic::tree::{SemanticNode, SemanticRole, SemanticTree};
 pub fn format_llm(tree: &SemanticTree) -> String {
     let mut buf = String::with_capacity(4096);
 
-    let title = find_title(&tree.root);
-    if let Some(t) = title {
-        buf.push_str("# ");
-        buf.push_str(t.trim());
-        buf.push('\n');
-    }
-
     let mut actions = Vec::new();
     let mut links = Vec::new();
     let mut inputs = Vec::new();
     let mut headings = Vec::new();
     let mut landmarks = Vec::new();
     let mut frames = Vec::new();
+    let mut meta = Vec::new();
 
     collect_flat(
         &tree.root,
@@ -32,17 +26,39 @@ pub fn format_llm(tree: &SemanticTree) -> String {
         &mut headings,
         &mut landmarks,
         &mut frames,
+        &mut meta,
     );
 
-    for (level, text) in &headings {
-        let prefix = match level {
-            1..=2 => "## ",
-            3..=4 => "### ",
-            _ => "#### ",
-        };
-        buf.push_str(prefix);
-        buf.push_str(text);
+    let title = find_title(&tree.root);
+    if let Some(t) = title {
+        buf.push_str("# ");
+        buf.push_str(t.trim());
         buf.push('\n');
+    }
+
+    if !meta.is_empty() {
+        buf.push_str("-- Scores --\n");
+        for m in &meta {
+            buf.push_str(m);
+            buf.push('\n');
+        }
+    }
+
+    if !headings.is_empty() {
+        headings.sort_by_key(|(level, _)| *level);
+        let mut deduped = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (level, text) in &headings {
+            if seen.insert(text) {
+                deduped.push((*level, text.clone()));
+            }
+        }
+        deduped.sort_by_key(|(level, _)| *level);
+        buf.push_str("-- Headings --\n");
+        for (level, text) in &deduped {
+            let prefix = "#".repeat(*level as usize);
+            buf.push_str(&format!("{} {}\n", prefix, text));
+        }
     }
 
     if !landmarks.is_empty() {
@@ -90,6 +106,7 @@ pub fn format_llm(tree: &SemanticTree) -> String {
         "\n[{}L {}Li {}H {}F {}I {}Fr {}N total]",
         s.landmarks, s.links, s.headings, s.forms, s.images, s.iframes, s.total_nodes
     ));
+    buf.push_str(&format!("[{} meta items]", meta.len()));
 
     buf
 }
@@ -114,6 +131,7 @@ fn collect_flat(
     headings: &mut Vec<(u8, String)>,
     landmarks: &mut Vec<String>,
     frames: &mut Vec<String>,
+    meta: &mut Vec<String>,
 ) {
     match &node.role {
         SemanticRole::Heading { level } => {
@@ -156,6 +174,32 @@ fn collect_flat(
                 if let Some(id) = node.element_id {
                     let name = node.name.as_deref().unwrap_or("");
                     let mut s = format!("[#{}] text \"{}\"", id, name);
+                    if let Some(itype) = &node.input_type {
+                        s.push_str(&format!(" [{}]", itype));
+                    }
+                    if node.is_required {
+                        s.push_str(" [required]");
+                    }
+                    if node.is_readonly {
+                        s.push_str(" [readonly]");
+                    }
+                    if let Some(placeholder) = &node.placeholder {
+                        if node.name.as_deref() != Some(placeholder.as_str()) {
+                            s.push_str(&format!(
+                                " [placeholder: \"{}\"]",
+                                truncate(placeholder, 40)
+                            ));
+                        }
+                    }
+                    if let Some(pattern) = &node.pattern {
+                        s.push_str(&format!(" [pattern: \"{}\"]", truncate(pattern, 30)));
+                    }
+                    if let Some(min_len) = node.min_length {
+                        s.push_str(&format!(" [minlen: {}]", min_len));
+                    }
+                    if let Some(max_len) = node.max_length {
+                        s.push_str(&format!(" [maxlen: {}]", max_len));
+                    }
                     if node.is_disabled {
                         s.push_str(" [off]");
                     }
@@ -168,6 +212,23 @@ fn collect_flat(
                 if let Some(id) = node.element_id {
                     let name = node.name.as_deref().unwrap_or("");
                     let mut s = format!("[#{}] select \"{}\"", id, name);
+                    if node.is_required {
+                        s.push_str(" [required]");
+                    }
+                    if !node.options.is_empty() {
+                        let total = node.options.len();
+                        let selected: Vec<_> = node
+                            .options
+                            .iter()
+                            .filter(|o| o.is_selected)
+                            .map(|o| o.label.as_str())
+                            .collect();
+                        s.push_str(&format!(" [{} options", total));
+                        if !selected.is_empty() {
+                            s.push_str(&format!(", selected: \"{}\"", selected.join("\", \"")));
+                        }
+                        s.push(']');
+                    }
                     if node.is_disabled {
                         s.push_str(" [off]");
                     }
@@ -180,6 +241,12 @@ fn collect_flat(
                 if let Some(id) = node.element_id {
                     let name = node.name.as_deref().unwrap_or("");
                     let mut s = format!("[#{}] check \"{}\"", id, name);
+                    if node.is_checked {
+                        s.push_str(" [checked]");
+                    }
+                    if node.is_required {
+                        s.push_str(" [required]");
+                    }
                     if node.is_disabled {
                         s.push_str(" [off]");
                     }
@@ -192,6 +259,12 @@ fn collect_flat(
                 if let Some(id) = node.element_id {
                     let name = node.name.as_deref().unwrap_or("");
                     let mut s = format!("[#{}] radio \"{}\"", id, name);
+                    if node.is_checked {
+                        s.push_str(" [checked]");
+                    }
+                    if node.is_required {
+                        s.push_str(" [required]");
+                    }
                     if node.is_disabled {
                         s.push_str(" [off]");
                     }
@@ -224,11 +297,24 @@ fn collect_flat(
             }
             frames.push(s);
         }
+        SemanticRole::StaticText => {}
+        SemanticRole::Generic => {
+            if !node.is_interactive && node.element_id.is_none() {
+                if let Some(name) = &node.name {
+                    let trimmed = name.trim();
+                    if trimmed.contains("points") && trimmed.contains('|') {
+                        meta.push(truncate(trimmed, 120).to_string());
+                    }
+                }
+            }
+        }
         _ => {}
     }
 
     for child in &node.children {
-        collect_flat(child, actions, links, inputs, headings, landmarks, frames);
+        collect_flat(
+            child, actions, links, inputs, headings, landmarks, frames, meta,
+        );
     }
 }
 
@@ -368,10 +454,11 @@ mod tests {
         let tree = SemanticTree::build(&html, "https://example.com");
         let out = format_llm(&tree);
 
-        assert!(out.contains("## One"));
+        assert!(out.contains("# One"));
         assert!(out.contains("## Two"));
         assert!(out.contains("### Three"));
-        assert!(out.contains("#### Five"));
+        assert!(out.contains("##### Five"));
+        assert!(out.contains("-- Headings --"));
     }
 
     #[test]
@@ -560,5 +647,149 @@ mod tests {
             .filter(|l| l.contains("navigation") || l.contains("contentinfo"))
             .count();
         assert_eq!(region_count, 2);
+    }
+
+    #[test]
+    fn test_llm_checkbox_checked_state() {
+        let html = Html::parse_document(
+            r#"<html><body>
+                <form>
+                    <label><input type="checkbox" name="agree" checked> I agree</label>
+                    <label><input type="checkbox" name="newsletter"> Subscribe</label>
+                </form>
+            </body></html>"#,
+        );
+        let tree = SemanticTree::build(&html, "https://example.com");
+        let out = format_llm(&tree);
+
+        assert!(out.contains("[checked]"));
+        assert!(out.contains("agree"));
+        assert!(out.contains("newsletter"));
+        let lines: Vec<_> = out.lines().filter(|l| l.contains("check")).collect();
+        let checked_lines: Vec<_> = lines.iter().filter(|l| l.contains("[checked]")).collect();
+        let unchecked_lines: Vec<_> = lines.iter().filter(|l| !l.contains("[checked]")).collect();
+        assert_eq!(checked_lines.len(), 1);
+        assert_eq!(unchecked_lines.len(), 1);
+    }
+
+    #[test]
+    fn test_llm_select_with_options() {
+        let html = Html::parse_document(
+            r#"<html><body>
+                <form>
+                    <label>Country</label>
+                    <select name="country" required>
+                        <option value="">Choose one</option>
+                        <option value="us" selected>United States</option>
+                        <option value="ca">Canada</option>
+                        <option value="uk">United Kingdom</option>
+                    </select>
+                </form>
+            </body></html>"#,
+        );
+        let tree = SemanticTree::build(&html, "https://example.com");
+        let out = format_llm(&tree);
+
+        assert!(out.contains("[4 options"));
+        assert!(out.contains("selected: \"United States\""));
+        assert!(out.contains("[required]"));
+    }
+
+    #[test]
+    fn test_llm_input_type_and_required() {
+        let html = Html::parse_document(
+            r#"<html><body>
+                <form>
+                    <input type="email" id="email-field" name="email" required placeholder="Enter your email address">
+                    <input type="password" name="pass" required minlength="8" maxlength="128">
+                    <input type="number" name="age" min="0" max="150" step="1">
+                    <input type="tel" name="phone" pattern="[0-9\-]+">
+                    <input type="text" name="readonly_field" readonly>
+                </form>
+            </body></html>"#,
+        );
+        let tree = SemanticTree::build(&html, "https://example.com");
+        let out = format_llm(&tree);
+
+        assert!(out.contains("[email]"));
+        assert!(out.contains("[required]"));
+        assert!(out.contains("[password]"));
+        assert!(out.contains("[minlen: 8]"));
+        assert!(out.contains("[maxlen: 128]"));
+        assert!(out.contains("[number]"));
+        assert!(out.contains("[readonly]"));
+    }
+
+    #[test]
+    fn test_llm_placeholder_shown_when_differs_from_name() {
+        let html = Html::parse_document(
+            r#"<html><body>
+                <input type="text" id="username" name="username" aria-label="Username" placeholder="Enter username">
+            </body></html>"#,
+        );
+        let tree = SemanticTree::build(&html, "https://example.com");
+        let out = format_llm(&tree);
+
+        assert!(out.contains("[placeholder: \"Enter username\"]"));
+    }
+
+    #[test]
+    fn test_llm_placeholder_not_shown_when_equals_name() {
+        let html = Html::parse_document(
+            r#"<html><body>
+                <input type="text" name="search" placeholder="search">
+            </body></html>"#,
+        );
+        let tree = SemanticTree::build(&html, "https://example.com");
+        let out = format_llm(&tree);
+
+        assert!(!out.contains("[placeholder:"));
+        assert!(out.contains("search"));
+    }
+
+    #[test]
+    fn test_llm_radio_checked_state() {
+        let html = Html::parse_document(
+            r#"<html><body>
+                <form>
+                    <label><input type="radio" name="plan" value="free" checked> Free</label>
+                    <label><input type="radio" name="plan" value="pro"> Pro</label>
+                </form>
+            </body></html>"#,
+        );
+        let tree = SemanticTree::build(&html, "https://example.com");
+        let out = format_llm(&tree);
+
+        assert!(out.contains("[checked]"));
+        let lines: Vec<_> = out.lines().filter(|l| l.contains("radio")).collect();
+        let checked: Vec<_> = lines.iter().filter(|l| l.contains("[checked]")).collect();
+        assert_eq!(checked.len(), 1);
+    }
+
+    #[test]
+    fn test_llm_select_empty_options() {
+        let html = Html::parse_document(
+            r#"<html><body>
+                <select name="empty"><option value="">--</option></select>
+            </body></html>"#,
+        );
+        let tree = SemanticTree::build(&html, "https://example.com");
+        let out = format_llm(&tree);
+
+        assert!(out.contains("[1 options"));
+    }
+
+    #[test]
+    fn test_llm_required_checkbox() {
+        let html = Html::parse_document(
+            r#"<html><body>
+                <label><input type="checkbox" name="terms" required> Accept terms</label>
+            </body></html>"#,
+        );
+        let tree = SemanticTree::build(&html, "https://example.com");
+        let out = format_llm(&tree);
+
+        assert!(out.contains("[required]"));
+        assert!(out.contains("terms"));
     }
 }

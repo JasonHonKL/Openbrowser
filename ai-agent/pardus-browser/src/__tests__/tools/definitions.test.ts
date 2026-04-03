@@ -4,8 +4,8 @@ import { browserTools, BrowserToolName } from '../../tools/definitions.js';
 
 describe('Tool Definitions', () => {
   describe('browserTools', () => {
-    it('should have 16 tools', () => {
-      assert.strictEqual(browserTools.length, 16);
+    it('should have 19 tools', () => {
+      assert.strictEqual(browserTools.length, 19);
     });
 
     it('should include all expected tools', () => {
@@ -24,6 +24,9 @@ describe('Tool Definitions', () => {
         'browser_set_storage',
         'browser_delete_storage',
         'browser_clear_storage',
+        'browser_get_action_plan',
+        'browser_auto_fill',
+        'browser_wait',
         'browser_get_state',
         'browser_list',
         'browser_close',
@@ -152,6 +155,76 @@ describe('Tool Definitions', () => {
     });
   });
 
+  describe('browser_get_action_plan', () => {
+    const tool = browserTools.find(t => t.function.name === 'browser_get_action_plan')!;
+
+    it('should exist', () => {
+      assert.ok(tool);
+    });
+
+    it('should require instance_id', () => {
+      const required = tool.function.parameters.required || [];
+      assert.ok(required.includes('instance_id'));
+    });
+
+    it('should describe action planning', () => {
+      assert.ok(tool.function.description.includes('action plan'));
+      assert.ok(tool.function.description.includes('confidence'));
+    });
+  });
+
+  describe('browser_auto_fill', () => {
+    const tool = browserTools.find(t => t.function.name === 'browser_auto_fill')!;
+
+    it('should exist', () => {
+      assert.ok(tool);
+    });
+
+    it('should require instance_id and fields', () => {
+      const required = tool.function.parameters.required || [];
+      assert.ok(required.includes('instance_id'));
+      assert.ok(required.includes('fields'));
+    });
+
+    it('should have fields as array', () => {
+      const fields = tool.function.parameters.properties.fields as { type: string; items: { properties: Record<string, unknown> } };
+      assert.strictEqual(fields.type, 'array');
+      assert.ok(fields.items.properties.key);
+      assert.ok(fields.items.properties.value);
+    });
+  });
+
+  describe('browser_wait', () => {
+    const tool = browserTools.find(t => t.function.name === 'browser_wait')!;
+
+    it('should exist', () => {
+      assert.ok(tool);
+    });
+
+    it('should require instance_id and condition', () => {
+      const required = tool.function.parameters.required || [];
+      assert.ok(required.includes('instance_id'));
+      assert.ok(required.includes('condition'));
+    });
+
+    it('should have condition enum with all wait types', () => {
+      const conditionProp = tool.function.parameters.properties.condition as { enum: string[] };
+      assert.ok(conditionProp.enum.includes('contentLoaded'));
+      assert.ok(conditionProp.enum.includes('contentStable'));
+      assert.ok(conditionProp.enum.includes('networkIdle'));
+      assert.ok(conditionProp.enum.includes('minInteractive'));
+      assert.ok(conditionProp.enum.includes('selector'));
+    });
+
+    it('should have optional selector parameter', () => {
+      assert.ok('selector' in tool.function.parameters.properties);
+    });
+
+    it('should have optional timeout_ms parameter', () => {
+      assert.ok('timeout_ms' in tool.function.parameters.properties);
+    });
+  });
+
   describe('BrowserToolName', () => {
     it('should be a union of all tool names', () => {
       const toolNames: BrowserToolName[] = [
@@ -168,12 +241,15 @@ describe('Tool Definitions', () => {
         'browser_set_storage',
         'browser_delete_storage',
         'browser_clear_storage',
+        'browser_get_action_plan',
+        'browser_auto_fill',
+        'browser_wait',
         'browser_get_state',
         'browser_list',
         'browser_close',
       ];
 
-      assert.strictEqual(toolNames.length, 16);
+      assert.strictEqual(toolNames.length, 19);
     });
   });
 });

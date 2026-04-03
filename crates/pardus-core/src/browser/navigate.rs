@@ -31,6 +31,7 @@ impl Browser {
     }
 
     /// Navigate with JS execution enabled.
+    /// Persists JS settings to the active tab's config for subsequent reloads.
     pub async fn navigate_with_js(&mut self, url: &str, wait_ms: u32) -> anyhow::Result<&Tab> {
         if !self.config.sandbox.is_navigation_allowed(url) {
             anyhow::bail!("Navigation to '{}' blocked by sandbox policy", url);
@@ -40,6 +41,8 @@ impl Browser {
             let id = self.create_tab(url);
             let tab = self.tabs.get_mut(&id)
                 .ok_or_else(|| anyhow::anyhow!("tab missing after creation"))?;
+            tab.config.js_enabled = true;
+            tab.config.wait_ms = wait_ms;
             tab.load_with_client(&self.http_client, &self.network_log, &self.config, true, wait_ms).await?;
             self.active_tab = Some(id);
             return Ok(self.tabs.get(&id)
@@ -49,6 +52,8 @@ impl Browser {
         let id = self.require_active_id()?;
         let tab = self.tabs.get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?;
+        tab.config.js_enabled = true;
+        tab.config.wait_ms = wait_ms;
         tab.navigate_with_client(&self.http_client, &self.network_log, &self.config, url, true, wait_ms).await?;
         Ok(self.tabs.get(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?)
@@ -62,5 +67,14 @@ impl Browser {
         tab.reload_with_client(&self.http_client, &self.network_log, &self.config).await?;
         Ok(self.tabs.get(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?)
+    }
+
+    /// Set JS execution mode for the active tab.
+    /// Persists the setting so subsequent reloads use it.
+    pub fn set_js_enabled(&mut self, enabled: bool, wait_ms: u32) {
+        if let Some(tab) = self.active_tab_mut() {
+            tab.config.js_enabled = enabled;
+            tab.config.wait_ms = wait_ms;
+        }
     }
 }

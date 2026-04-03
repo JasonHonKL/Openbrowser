@@ -87,7 +87,7 @@ pub async fn wait_for_selector_with_js(
     })
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WaitCondition {
     Selector(String),
     ContentLoaded,

@@ -19,7 +19,7 @@ pub struct PrefetchManager {
 }
 
 impl PrefetchManager {
-    pub fn new(client: reqwest::Client, config: PrefetchConfig, cache: Arc<ResourceCache>) -> Self {
+    pub fn new(client: rquest::Client, config: PrefetchConfig, cache: Arc<ResourceCache>) -> Self {
         let predictor = Arc::new(NavigationPredictor::new());
         let prefetcher = Arc::new(Prefetcher::new(client, config.clone(), cache));
 

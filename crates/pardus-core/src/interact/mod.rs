@@ -16,6 +16,6 @@ pub use scroll::ScrollDirection;
 pub use action_plan::{ActionPlan, ActionType, PageType, SuggestedAction};
 pub use auto_fill::{AutoFillValues, AutoFillResult, ValidationStatus};
 pub use recording::{SessionRecording, SessionRecorder, RecordedAction, RecordedActionType, ReplayStepResult, replay};
-pub use wait::{wait_for_selector};
+pub use wait::{wait_for_selector, WaitCondition, wait_smart};
 #[cfg(feature = "js")]
 pub use js_interact::{js_click, js_type, js_scroll, js_submit};

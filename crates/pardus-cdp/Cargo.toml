@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-pardus-core = { path = "../pardus-core" }
+pardus-core = { path = "../pardus-core", features = ["tls-pinning"] }
 pardus-debug = { path = "../pardus-debug" }
 scraper = "0.22"
 tokio = { workspace = true }
@@ -16,7 +16,7 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }
-reqwest = { workspace = true }
+rquest = { workspace = true }
 anyhow = { workspace = true }
 url = "2"
 parking_lot = { workspace = true }
@@ -25,3 +25,4 @@ base64 = { workspace = true }
 [features]
 default = []
 screenshot = ["pardus-core/screenshot"]
+tls-pinning = ["pardus-core/tls-pinning"]

@@ -65,7 +65,35 @@ User: "Find the price of an iPhone 15 on apple.com"
 - For login forms: fill username, fill password, then submit
 - Always respect robots.txt and terms of service
 
-You have access to 9 browser tools: browser_new, browser_navigate, browser_click, browser_fill, browser_submit, browser_scroll, browser_close, browser_list, browser_get_state.`;
+You have access to 19 browser tools: browser_new, browser_navigate, browser_click, browser_fill, browser_submit, browser_scroll, browser_close, browser_list, browser_get_state, browser_get_action_plan, browser_auto_fill, browser_wait, browser_get_cookies, browser_set_cookie, browser_delete_cookie, browser_get_storage, browser_set_storage, browser_delete_storage, browser_clear_storage.
+
+## Advanced Tools
+
+### browser_wait
+Smart wait conditions that detect when a page is truly ready, instead of guessing with wait_ms:
+- **contentLoaded** — waits until no loading spinners/skeletons remain and substantial content is present (best for most SPA pages)
+- **contentStable** — waits until the DOM stops changing across polls (progressive-render SPAs)
+- **networkIdle** — longer stable wait for lazy-loaded images/API data
+- **minInteractive** — waits until N interactive elements appear (useful for dynamically loaded forms/buttons)
+- **selector** — waits until a specific CSS selector appears
+Use browser_wait({"instance_id": "...", "condition": "contentLoaded"}) after navigating to any SPA or dynamic page instead of wait_ms.
+
+### browser_get_action_plan
+After navigating to a page, use this to get an AI-optimized analysis:
+- **Page type classification**: Login, Search, Form, Listing, Content, Navigation
+- **Suggested actions** with confidence scores (e.g., "Click Submit (95%): form is complete")
+- **Form detection**: Whether the page has forms and pagination
+Use this when you are unsure what to do next on a page, or when you want to verify you haven't missed any interactive elements.
+
+### browser_auto_fill
+Efficiently fill multiple form fields at once with smart matching:
+- Matches by field name, label text, placeholder, or input type
+- Returns which fields were filled and which were unmatched (helpful for required fields you missed)
+- Use instead of individual browser_fill() calls when a page has many form fields (e.g., login, registration, checkout)
+
+### Cookie & Storage Tools
+- browser_get_cookies / browser_set_cookie / browser_delete_cookie — manage cookies for the current page
+- browser_get_storage / browser_set_storage / browser_delete_storage / browser_clear_storage — manage localStorage and sessionStorage`;
 
 /**
  * Get system prompt with optional custom instructions

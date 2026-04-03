@@ -54,7 +54,7 @@ rustup install nightly
 # Clone and build
 git clone https://github.com/user/pardus-browser.git
 cd pardus-browser
-cargo +nightly install --path crates/pardus-cli --feature js 
+cargo +nightly install --path crates/pardus-cli --features js 
 ```
 
 ### Docker

@@ -3,7 +3,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use reqwest::header::{HeaderMap, HeaderValue};
+use rquest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -28,6 +28,17 @@ pub enum SessionError {
     Json(#[from] serde_json::Error),
     #[error("Cookie error: {0}")]
     Cookie(String),
+}
+
+/// A structured cookie entry for programmatic access.
+#[derive(Debug, Clone, Serialize)]
+pub struct CookieEntry {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub path: String,
+    pub http_only: bool,
+    pub secure: bool,
 }
 
 /// Result type alias for session operations.
@@ -378,6 +389,59 @@ impl SessionStore {
             });
         }
         removed
+    }
+
+    /// List all unexpired cookies as structured entries.
+    pub fn all_cookies(&self) -> Vec<CookieEntry> {
+        let jar = self.jar.lock();
+        jar.iter_unexpired()
+            .map(|cookie| {
+                let name = cookie.name().to_string();
+                let value = cookie.value().to_string();
+                let domain = cookie.domain().unwrap_or("").to_string();
+                let path = cookie.path().unwrap_or("/").to_string();
+                let http_only = cookie.http_only().unwrap_or(false);
+                let secure = cookie.secure().unwrap_or(false);
+                CookieEntry {
+                    name,
+                    value,
+                    domain,
+                    path,
+                    http_only,
+                    secure,
+                }
+            })
+            .collect()
+    }
+
+    /// Set a cookie programmatically by name, value, domain, and path.
+    pub fn set_cookie(&self, name: &str, value: &str, domain: &str, path: &str) {
+        let header = format!(
+            "{}={}; Domain={}; Path={}",
+            name, value, domain, path
+        );
+        let url_str = if domain.starts_with('.') {
+            format!("https://{}", &domain[1..])
+        } else {
+            format!("https://{}", domain)
+        };
+        if let Ok(url) = url_str.parse::<Url>() {
+            let mut jar = self.jar.lock();
+            let mut raw = self.raw_cookies.lock();
+            if let Err(e) = jar.parse(&header, &url) {
+                tracing::debug!("failed to parse cookie: {}", e);
+            } else if raw.len() < MAX_COOKIES {
+                raw.push(StoredCookie {
+                    url: url.to_string(),
+                    header,
+                });
+            }
+        }
+    }
+
+    /// Get a reference to the inner cookie store for rquest integration.
+    pub fn jar(&self) -> &Mutex<cookie_store::CookieStore> {
+        &self.jar
     }
 
     pub fn session_dir(&self) -> &Path {

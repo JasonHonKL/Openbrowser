@@ -153,6 +153,7 @@ impl Calendar {
             }
             AnyCalendarKind::Iso => &AnyCalendar::Iso(Iso),
             AnyCalendarKind::Japanese => const { &AnyCalendar::Japanese(Japanese::new()) },
+            #[allow(deprecated)]
             AnyCalendarKind::JapaneseExtended => {
                 const { &AnyCalendar::Japanese(Japanese::new()) }
             }

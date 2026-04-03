@@ -10,7 +10,7 @@ use super::actions::InteractionResult;
 
 /// Accumulated form field values, keyed by field name.
 /// Built up via type() calls, then submitted via submit_form().
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct FormState {
     fields: HashMap<String, String>,
 }

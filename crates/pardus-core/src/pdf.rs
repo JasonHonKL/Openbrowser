@@ -66,6 +66,29 @@ pub fn extract_pdf_tree(bytes: &[u8]) -> anyhow::Result<(SemanticTree, Option<St
         page_nodes.push(page_node);
     }
 
+    // Extract tables from positioned text
+    let table_nodes = extract_tables(bytes);
+    for table_node in &table_nodes {
+        stats.total_nodes += count_nodes(table_node);
+    }
+    page_nodes.extend(table_nodes);
+
+    // Extract form fields (AcroForm)
+    let form_nodes = extract_form_fields(bytes);
+    for form_node in &form_nodes {
+        stats.total_nodes += count_nodes(form_node);
+        stats.forms += 1;
+    }
+    page_nodes.extend(form_nodes);
+
+    // Extract image metadata
+    let image_nodes = extract_images(bytes);
+    stats.images += image_nodes.len();
+    for image_node in &image_nodes {
+        stats.total_nodes += count_nodes(image_node);
+    }
+    page_nodes.extend(image_nodes);
+
     if page_nodes.is_empty() {
         anyhow::bail!("PDF contains no extractable text content");
     }
@@ -81,6 +104,512 @@ pub fn extract_pdf_tree(bytes: &[u8]) -> anyhow::Result<(SemanticTree, Option<St
 
     Ok((SemanticTree { root, stats }, title))
 }
+
+fn count_nodes(node: &SemanticNode) -> usize {
+    1 + node.children.iter().map(count_nodes).sum::<usize>()
+}
+
+// ---------------------------------------------------------------------------
+// Table extraction from PDF text positions
+// ---------------------------------------------------------------------------
+
+/// Detect tabular data by analyzing per-page text with column alignment heuristics.
+fn extract_tables(bytes: &[u8]) -> Vec<SemanticNode> {
+    let doc = match lopdf::Document::load_mem(bytes) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut tables = Vec::new();
+    let pages = doc.get_pages();
+
+    for (_page_num, page_id) in &pages {
+        if let Ok(content_data) = doc.get_page_content(*page_id) {
+            if let Ok(text_ops) = parse_text_positions(&content_data) {
+                if let Some(table) = build_table_from_positions(&text_ops) {
+                    tables.push(table);
+                }
+            }
+        }
+    }
+
+    tables
+}
+
+/// A positioned text fragment extracted from PDF content stream.
+#[derive(Debug, Clone)]
+struct TextFragment {
+    x: f64,
+    y: f64,
+    text: String,
+}
+
+/// Parse text-showing operators from a content stream to get positioned fragments.
+fn parse_text_positions(data: &[u8]) -> anyhow::Result<Vec<TextFragment>> {
+    let content = lopdf::content::Content::decode(data)?;
+    let mut fragments = Vec::new();
+    let mut cur_x: f64 = 0.0;
+    let mut cur_y: f64 = 0.0;
+    let mut text_buffer = String::new();
+    let mut text_start_x: f64 = 0.0;
+
+    for operation in &content.operations {
+        match operation.operator.as_str() {
+            "Td" | "TD" => {
+                flush_text(&mut text_buffer, &mut fragments, text_start_x, cur_y);
+                if operation.operands.len() >= 2 {
+                    if let Ok(tx) = obj_to_f64(&operation.operands[0]) {
+                        if let Ok(ty) = obj_to_f64(&operation.operands[1]) {
+                            cur_x += tx;
+                            cur_y += ty;
+                        }
+                    }
+                }
+            }
+            "Tm" => {
+                flush_text(&mut text_buffer, &mut fragments, text_start_x, cur_y);
+                if operation.operands.len() >= 6 {
+                    if let Ok(x) = obj_to_f64(&operation.operands[4]) {
+                        if let Ok(y) = obj_to_f64(&operation.operands[5]) {
+                            cur_x = x;
+                            cur_y = y;
+                        }
+                    }
+                }
+            }
+            "Tj" => {
+                if operation.operands.len() == 1 {
+                    if text_buffer.is_empty() {
+                        text_start_x = cur_x;
+                    }
+                    if let Ok(s) = operation.operands[0].as_str() {
+                        text_buffer.push_str(&String::from_utf8_lossy(s));
+                    }
+                }
+            }
+            "TJ" => {
+                if let Ok(arr) = operation.operands[0].as_array() {
+                    if text_buffer.is_empty() {
+                        text_start_x = cur_x;
+                    }
+                    for item in arr {
+                        if let Ok(s) = item.as_str() {
+                            text_buffer.push_str(&String::from_utf8_lossy(s));
+                        } else if let Ok(kern) = item.as_float() {
+                            // Kerning > 100 likely indicates a column gap
+                            let kern_f64 = kern as f64;
+                            if kern_f64.abs() > 100.0 && !text_buffer.is_empty() {
+                                flush_text(&mut text_buffer, &mut fragments, text_start_x, cur_y);
+                                text_start_x = cur_x - kern_f64;
+                            }
+                        }
+                    }
+                }
+            }
+            "ET" => {
+                flush_text(&mut text_buffer, &mut fragments, text_start_x, cur_y);
+            }
+            _ => {}
+        }
+    }
+
+    flush_text(&mut text_buffer, &mut fragments, text_start_x, cur_y);
+    Ok(fragments)
+}
+
+/// Convert an lopdf Object to f64, handling both Integer and Real variants.
+fn obj_to_f64(obj: &lopdf::Object) -> Result<f64, ()> {
+    match obj {
+        lopdf::Object::Integer(i) => Ok(*i as f64),
+        lopdf::Object::Real(f) => Ok(*f as f64),
+        _ => Err(()),
+    }
+}
+
+fn flush_text(buf: &mut String, frags: &mut Vec<TextFragment>, x: f64, y: f64) {
+    let trimmed = buf.trim().to_string();
+    if !trimmed.is_empty() {
+        frags.push(TextFragment {
+            x,
+            y,
+            text: trimmed,
+        });
+    }
+    buf.clear();
+}
+
+/// Group text fragments into rows and detect tabular alignment.
+fn build_table_from_positions(fragments: &[TextFragment]) -> Option<SemanticNode> {
+    if fragments.len() < 4 {
+        return None;
+    }
+
+    // Group by y-coordinate (rows) with tolerance
+    let mut rows: Vec<Vec<&TextFragment>> = Vec::new();
+    let y_tolerance = 2.0;
+
+    for frag in fragments {
+        let mut found_row = false;
+        for row in &mut rows {
+            if let Some(first) = row.first() {
+                if (first.y - frag.y).abs() < y_tolerance {
+                    row.push(frag);
+                    found_row = true;
+                    break;
+                }
+            }
+        }
+        if !found_row {
+            rows.push(vec![frag]);
+        }
+    }
+
+    // Sort each row by x position
+    for row in &mut rows {
+        row.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+    }
+
+    // Filter out single-cell rows (not tabular)
+    rows.retain(|row| row.len() >= 2);
+
+    if rows.len() < 2 {
+        return None;
+    }
+
+    // Check that rows have consistent column counts (at least 60% consistency)
+    let col_counts: Vec<usize> = rows.iter().map(|r| r.len()).collect();
+    let max_cols = *col_counts.iter().max().unwrap_or(&0);
+    if max_cols < 2 {
+        return None;
+    }
+    let most_common = mode(&col_counts).unwrap_or(2);
+    let consistent_rows = col_counts.iter().filter(|&&c| c == most_common).count();
+    if (consistent_rows as f64) / (col_counts.len() as f64) < 0.6 {
+        return None;
+    }
+
+    // Build table node
+    let mut row_nodes = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let mut cell_nodes = Vec::new();
+        for cell in row {
+            let cell_node = make_node(
+                if i == 0 {
+                    SemanticRole::ColumnHeader
+                } else {
+                    SemanticRole::Cell
+                },
+                Some(cell.text.clone()),
+                if i == 0 {
+                    "th".to_string()
+                } else {
+                    "td".to_string()
+                },
+                Vec::new(),
+            );
+            cell_nodes.push(cell_node);
+        }
+        let row_node = make_node(SemanticRole::Row, None, "tr".to_string(), cell_nodes);
+        row_nodes.push(row_node);
+    }
+
+    Some(make_node(
+        SemanticRole::Table,
+        None,
+        "table".to_string(),
+        row_nodes,
+    ))
+}
+
+fn mode(vals: &[usize]) -> Option<usize> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<usize, usize> = HashMap::new();
+    for &v in vals {
+        *counts.entry(v).or_insert(0) += 1;
+    }
+    counts.into_iter().max_by_key(|&(_, c)| c).map(|(v, _)| v)
+}
+
+// ---------------------------------------------------------------------------
+// Form field extraction (AcroForm)
+// ---------------------------------------------------------------------------
+
+fn extract_form_fields(bytes: &[u8]) -> Vec<SemanticNode> {
+    let doc = match lopdf::Document::load_mem(bytes) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let catalog = match doc.catalog() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    let acro_form_obj = match catalog.get(b"AcroForm") {
+        Ok(obj) => obj,
+        Err(_) => return Vec::new(),
+    };
+
+    // Get the AcroForm dictionary — it might be a direct dict or a reference
+    let form_dict = match acro_form_obj {
+        lopdf::Object::Reference(id) => match doc.get_dictionary(*id) {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        },
+        lopdf::Object::Dictionary(_) => match acro_form_obj.as_dict() {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+
+    let fields_obj = match form_dict.get(b"Fields") {
+        Ok(obj) => obj,
+        Err(_) => return Vec::new(),
+    };
+
+    let field_ids: Vec<lopdf::ObjectId> = match fields_obj {
+        lopdf::Object::Array(arr) => arr.iter().filter_map(|o| o.as_reference().ok()).collect(),
+        lopdf::Object::Reference(id) => match doc.get_object(*id).and_then(|o| o.as_array()) {
+            Ok(a) => a.iter().filter_map(|o| o.as_reference().ok()).collect(),
+            Err(_) => return Vec::new(),
+        },
+        _ => return Vec::new(),
+    };
+
+    if field_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let mut field_nodes = Vec::new();
+    let mut next_id = 1usize;
+
+    for field_id in &field_ids {
+        if let Some(node) = extract_field_node(&doc, *field_id, &mut next_id) {
+            field_nodes.push(node);
+        }
+    }
+
+    if field_nodes.is_empty() {
+        return Vec::new();
+    }
+
+    vec![make_node(
+        SemanticRole::Form,
+        Some("PDF Form Fields".to_string()),
+        "form".to_string(),
+        field_nodes,
+    )]
+}
+
+fn extract_field_node(
+    doc: &lopdf::Document,
+    field_id: lopdf::ObjectId,
+    next_id: &mut usize,
+) -> Option<SemanticNode> {
+    let dict = doc.get_dictionary(field_id).ok()?;
+
+    // Get field type
+    let ft_obj = dict.get(b"FT").ok()?;
+    let ft_name_bytes = match ft_obj {
+        lopdf::Object::Reference(id) => {
+            let obj = doc.get_object(*id).ok()?;
+            obj.as_name().ok()?
+        }
+        _ => ft_obj.as_name().ok()?,
+    };
+    let ft_name = String::from_utf8_lossy(ft_name_bytes).to_string();
+
+    let (role, input_type, tag) = match ft_name.as_str() {
+        "Tx" => (
+            SemanticRole::TextBox,
+            Some("text".to_string()),
+            "input".to_string(),
+        ),
+        "Btn" => (
+            SemanticRole::Checkbox,
+            Some("checkbox".to_string()),
+            "input".to_string(),
+        ),
+        "Ch" => (
+            SemanticRole::Combobox,
+            Some("select".to_string()),
+            "select".to_string(),
+        ),
+        "Sig" => (
+            SemanticRole::Button,
+            Some("signature".to_string()),
+            "input".to_string(),
+        ),
+        _ => (SemanticRole::TextBox, None, "input".to_string()),
+    };
+
+    // Get field name (T)
+    let name = dict
+        .get(b"T")
+        .ok()
+        .and_then(|o| o.as_str().ok())
+        .map(|b| String::from_utf8_lossy(b).to_string())
+        .or_else(|| {
+            dict.get(b"TU")
+                .ok()
+                .and_then(|o| o.as_str().ok())
+                .map(|b| String::from_utf8_lossy(b).to_string())
+        });
+
+    // Get default value (V)
+    let value = dict
+        .get(b"V")
+        .ok()
+        .and_then(|o| o.as_str().ok())
+        .map(|b| String::from_utf8_lossy(b).to_string())
+        .or_else(|| {
+            // Value might be a name
+            dict.get(b"V")
+                .ok()
+                .and_then(|o| o.as_name().ok())
+                .map(|b| String::from_utf8_lossy(b).to_string())
+        });
+
+    // Build display name: "FieldName: Value" or just "FieldName"
+    let display_name = match (&name, &value) {
+        (Some(n), Some(v)) => Some(format!("{}: {}", n, v)),
+        (Some(n), None) => Some(n.clone()),
+        (None, Some(v)) => Some(v.clone()),
+        _ => None,
+    };
+
+    let element_id = *next_id;
+    *next_id += 1;
+
+    // Check for kids (radio buttons, choice lists)
+    if let Ok(kids) = dict.get(b"Kids") {
+        if let Ok(arr) = kids.as_array() {
+            let mut child_nodes = Vec::new();
+            for kid in arr {
+                if let Ok(kid_id) = kid.as_reference() {
+                    if let Some(child) = extract_field_node(doc, kid_id, next_id) {
+                        child_nodes.push(child);
+                    }
+                }
+            }
+            if !child_nodes.is_empty() {
+                return Some(SemanticNode {
+                    role,
+                    name: display_name,
+                    tag,
+                    is_interactive: true,
+                    is_disabled: false,
+                    href: None,
+                    action: Some("fill".to_string()),
+                    element_id: Some(element_id),
+                    selector: None,
+                    input_type,
+                    placeholder: None,
+                    is_required: false,
+                    is_readonly: false,
+                    current_value: None,
+                    is_checked: false,
+                    options: Vec::new(),
+                    pattern: None,
+                    min_length: None,
+                    max_length: None,
+                    min_val: None,
+                    max_val: None,
+                    step_val: None,
+                    autocomplete: None,
+                    children: child_nodes,
+                });
+            }
+        }
+    }
+
+    Some(SemanticNode {
+        role,
+        name: display_name,
+        tag,
+        is_interactive: true,
+        is_disabled: false,
+        href: None,
+        action: Some("fill".to_string()),
+        element_id: Some(element_id),
+        selector: None,
+        input_type,
+        placeholder: None,
+        is_required: false,
+        is_readonly: false,
+        current_value: None,
+        is_checked: false,
+        options: Vec::new(),
+        pattern: None,
+        min_length: None,
+        max_length: None,
+        min_val: None,
+        max_val: None,
+        step_val: None,
+        autocomplete: None,
+        children: Vec::new(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Image extraction (metadata only — dimensions and format)
+// ---------------------------------------------------------------------------
+
+fn extract_images(bytes: &[u8]) -> Vec<SemanticNode> {
+    let doc = match lopdf::Document::load_mem(bytes) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut images = Vec::new();
+    let pages = doc.get_pages();
+
+    for (_page_num, page_id) in &pages {
+        if let Ok(page_images) = doc.get_page_images(*page_id) {
+            for (idx, img) in page_images.iter().enumerate() {
+                let mut label_parts = Vec::new();
+                label_parts.push(format!("Image {}", images.len() + idx + 1));
+                label_parts.push(format!("{}x{}", img.width, img.height));
+
+                let format_hint = img
+                    .filters
+                    .as_ref()
+                    .and_then(|f| f.last())
+                    .map(|s| s.as_str())
+                    .unwrap_or("Raw");
+                let format_name = match format_hint {
+                    "DCTDecode" => "JPEG",
+                    "JPXDecode" => "JPEG2000",
+                    "CCITTFaxDecode" => "CCITT (TIFF)",
+                    "JBIG2Decode" => "JBIG2",
+                    "FlateDecode" => "Lossless",
+                    "LZWDecode" => "LZW",
+                    _ => format_hint,
+                };
+                label_parts.push(format_name.to_string());
+
+                if let Some(cs) = &img.color_space {
+                    label_parts.push(cs.clone());
+                }
+
+                let name = Some(label_parts.join(" — "));
+                images.push(make_node(
+                    SemanticRole::Image,
+                    name,
+                    "img".to_string(),
+                    Vec::new(),
+                ));
+            }
+        }
+    }
+
+    images
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
 fn split_into_blocks(text: &str) -> Vec<String> {
     text.split("\n\n")
@@ -177,6 +706,19 @@ fn make_node(
         element_id: None,
         selector: None,
         input_type: None,
+        placeholder: None,
+        is_required: false,
+        is_readonly: false,
+        current_value: None,
+        is_checked: false,
+        options: Vec::new(),
+        pattern: None,
+        min_length: None,
+        max_length: None,
+        min_val: None,
+        max_val: None,
+        step_val: None,
+        autocomplete: None,
         children,
     }
 }
@@ -318,6 +860,32 @@ mod tests {
     fn extract_pdf_tree_invalid_bytes() {
         let result = extract_pdf_tree(b"not a pdf");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_images_from_non_pdf() {
+        let images = extract_images(b"not a pdf");
+        assert!(images.is_empty());
+    }
+
+    #[test]
+    fn extract_form_fields_from_non_pdf() {
+        let forms = extract_form_fields(b"not a pdf");
+        assert!(forms.is_empty());
+    }
+
+    #[test]
+    fn extract_tables_from_non_pdf() {
+        let tables = extract_tables(b"not a pdf");
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn extract_images_from_test_pdf() {
+        let pdf_bytes = make_test_pdf();
+        let images = extract_images(&pdf_bytes);
+        // Our test PDF has no image XObjects
+        assert!(images.is_empty());
     }
 
     fn make_test_pdf() -> Vec<u8> {

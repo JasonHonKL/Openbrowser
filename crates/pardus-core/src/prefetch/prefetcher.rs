@@ -53,7 +53,7 @@ pub struct Prefetcher {
 }
 
 impl Prefetcher {
-    pub fn new(client: reqwest::Client, config: PrefetchConfig, cache: Arc<ResourceCache>) -> Self {
+    pub fn new(client: rquest::Client, config: PrefetchConfig, cache: Arc<ResourceCache>) -> Self {
         let (tx, mut rx) = mpsc::channel::<PrefetchJob>(100);
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
 
@@ -85,7 +85,7 @@ impl Prefetcher {
                                 trace!("prefetched {} in {:?}", job.url, duration);
 
                                 let content_type = None;
-                                cache.insert(&job.url, bytes.clone(), content_type, &reqwest::header::HeaderMap::new());
+                                cache.insert(&job.url, bytes.clone(), content_type, &rquest::header::HeaderMap::new());
 
                                 let mut s = worker_stats.lock();
                                 s.successful += 1;
@@ -140,7 +140,7 @@ pub struct AdaptivePrefetcher {
 }
 
 impl AdaptivePrefetcher {
-    pub fn new(client: reqwest::Client, config: PrefetchConfig, cache: Arc<ResourceCache>) -> Self {
+    pub fn new(client: rquest::Client, config: PrefetchConfig, cache: Arc<ResourceCache>) -> Self {
         let base = Prefetcher::new(client, config, cache);
 
         Self {

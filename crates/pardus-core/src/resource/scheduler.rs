@@ -54,7 +54,7 @@ pub struct ResourceScheduler {
 }
 
 impl ResourceScheduler {
-    pub fn new(client: reqwest::Client, config: ResourceConfig, cache: Arc<ResourceCache>) -> Self {
+    pub fn new(client: rquest::Client, config: ResourceConfig, cache: Arc<ResourceCache>) -> Self {
         let fetcher = Arc::new(CachedFetcher::new(client, config.clone(), cache));
         Self {
             config,

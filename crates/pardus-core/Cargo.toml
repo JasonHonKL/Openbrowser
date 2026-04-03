@@ -9,10 +9,11 @@ scraper = "0.22"
 
 # Async & HTTP
 tokio = { workspace = true }
-reqwest = { workspace = true, features = ["stream", "socks"] }
+rquest = { workspace = true }
+rquest-util = { workspace = true }
 url = { workspace = true }
 cookie_store = "0.21"
-tokio-rustls = "0.26"
+
 sha2 = "0.10"
 
 # Serialization
@@ -58,10 +59,18 @@ bytes = { workspace = true }
 
 # PDF text extraction
 pdf-extract = "0.10"
+lopdf = "0.39"
+
+# RSS/Atom feed parsing
+feed-rs = "2"
 
 # WebSocket support
 tokio-tungstenite = "0.26"
 tungstenite = "0.26"
+
+# TLS certificate pinning (optional)
+tokio-rustls = { version = "0.26", optional = true }
+rustls = { version = "0.23", optional = true }
 
 # HTTP/2 push (optional — low-level PUSH_PROMISE reception)
 h2 = { workspace = true, optional = true }
@@ -73,9 +82,10 @@ which = { version = "7", optional = true }
 
 [features]
 default = []
-js = ["deno_core", "reqwest/stream", "reqwest/blocking"]
+js = ["deno_core", "rquest/stream"]
 h2-push = ["h2"]
 screenshot = ["chromiumoxide", "image", "which"]
+tls-pinning = ["dep:tokio-rustls", "dep:rustls"]
 
 [dev-dependencies]
 tempfile = "3"

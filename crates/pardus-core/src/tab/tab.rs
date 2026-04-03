@@ -199,13 +199,13 @@ impl Tab {
     }
 
     // -------------------------------------------------------------------
-    // Browser integration methods (take reqwest::Client directly)
+    // Browser integration methods (take rquest::Client directly)
     // -------------------------------------------------------------------
 
-    /// Load the page using a raw reqwest client.
+    /// Load the page using a raw rquest client.
     pub async fn load_with_client(
         &mut self,
-        _client: &reqwest::Client,
+        _client: &rquest::Client,
         _network_log: &Arc<Mutex<pardus_debug::NetworkLog>>,
         config: &BrowserConfig,
         js_enabled: bool,
@@ -239,10 +239,10 @@ impl Tab {
         }
     }
 
-    /// Navigate to a new URL using a raw reqwest client.
+    /// Navigate to a new URL using a raw rquest client.
     pub async fn navigate_with_client(
         &mut self,
-        client: &reqwest::Client,
+        client: &rquest::Client,
         network_log: &Arc<Mutex<pardus_debug::NetworkLog>>,
         config: &BrowserConfig,
         url: &str,
@@ -255,10 +255,10 @@ impl Tab {
         self.load_with_client(client, network_log, config, js_enabled, wait_ms).await
     }
 
-    /// Reload using a raw reqwest client.
+    /// Reload using a raw rquest client.
     pub async fn reload_with_client(
         &mut self,
-        client: &reqwest::Client,
+        client: &rquest::Client,
         network_log: &Arc<Mutex<pardus_debug::NetworkLog>>,
         config: &BrowserConfig,
     ) -> anyhow::Result<&Page> {

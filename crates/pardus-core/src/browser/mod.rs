@@ -17,8 +17,11 @@ use std::sync::Mutex;
 use pardus_debug::NetworkLog;
 
 use crate::config::BrowserConfig;
+use crate::interact::FormState;
+use crate::intercept::InterceptorManager;
 use crate::page::Page;
 use crate::push::PushCache;
+use crate::session::{CookieEntry, SessionStore};
 use crate::tab::{Tab, TabId};
 
 /// Unified headless browser for AI agents.
@@ -26,14 +29,18 @@ use crate::tab::{Tab, TabId};
 /// Owns the HTTP client, tab state, and provides navigation + interaction
 /// as a single cohesive API. Every operation targets the active tab.
 pub struct Browser {
-    pub http_client: reqwest::Client,
+    pub http_client: rquest::Client,
     pub config: BrowserConfig,
     pub network_log: Arc<Mutex<NetworkLog>>,
     pub push_cache: Arc<PushCache>,
+    pub interceptors: InterceptorManager,
+    /// Shared cookie jar for programmatic access.
+    pub cookie_jar: Arc<SessionStore>,
     #[cfg(feature = "screenshot")]
     screenshot_handle: crate::screenshot::ScreenshotHandle,
     tabs: HashMap<TabId, Tab>,
     active_tab: Option<TabId>,
+    pub(crate) form_state: FormState,
 }
 
 impl std::fmt::Debug for Browser {
@@ -53,6 +60,7 @@ impl Browser {
     /// Create a new Browser with the given configuration.
     pub fn new(config: BrowserConfig) -> anyhow::Result<Self> {
         let http_client = crate::app::build_http_client(&config)?;
+        let cache_dir = config.cache_dir.clone();
 
         let push_cache = Arc::new(PushCache::new(
             config.push.max_push_resources,
@@ -66,15 +74,23 @@ impl Browser {
             config.viewport_height,
         );
 
+        let cookie_jar = Arc::new(
+            SessionStore::ephemeral("browser", &cache_dir)
+                .expect("failed to create cookie jar"),
+        );
+
         Ok(Self {
             http_client,
             config,
             network_log: Arc::new(Mutex::new(NetworkLog::new())),
             push_cache,
+            interceptors: InterceptorManager::new(),
+            cookie_jar,
             #[cfg(feature = "screenshot")]
             screenshot_handle,
             tabs: HashMap::new(),
             active_tab: None,
+            form_state: FormState::new(),
         })
     }
 
@@ -134,6 +150,44 @@ impl Browser {
     #[cfg(feature = "screenshot")]
     pub fn screenshot_handle(&self) -> &crate::screenshot::ScreenshotHandle {
         &self.screenshot_handle
+    }
+
+    // -------------------------------------------------------------------
+    // Cookie jar convenience methods
+    // -------------------------------------------------------------------
+
+    /// Get a reference to the cookie jar.
+    pub fn cookie_jar(&self) -> &Arc<SessionStore> {
+        &self.cookie_jar
+    }
+
+    /// List all cookies in the jar.
+    pub fn all_cookies(&self) -> Vec<CookieEntry> {
+        self.cookie_jar.all_cookies()
+    }
+
+    /// Get cookies for a specific URL (as header string value).
+    pub fn cookies_for_url(&self, url: &str) -> Option<String> {
+        let parsed: url::Url = url.parse().ok()?;
+        self.cookie_jar.cookies(&parsed).and_then(|v| {
+            let s = v.to_str().ok()?;
+            if s.is_empty() { None } else { Some(s.to_string()) }
+        })
+    }
+
+    /// Set a cookie programmatically.
+    pub fn set_cookie(&self, name: &str, value: &str, domain: &str, path: &str) {
+        self.cookie_jar.set_cookie(name, value, domain, path);
+    }
+
+    /// Delete a cookie by name, domain, and path.
+    pub fn delete_cookie(&self, name: &str, domain: &str, path: &str) -> bool {
+        self.cookie_jar.delete_cookie(name, domain, path)
+    }
+
+    /// Clear all cookies.
+    pub fn clear_cookies(&self) {
+        self.cookie_jar.clear_cookies();
     }
 }
 

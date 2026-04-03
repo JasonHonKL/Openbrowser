@@ -94,7 +94,7 @@ impl ConnectionPool {
         let _host = url.host_str().unwrap_or("localhost");
         let _port = url.port().unwrap_or(443);
 
-        // For now, return placeholder - reqwest handles actual connections
+        // For now, return placeholder - rquest handles actual connections
         let id = fastrand::u64(..);
 
         let conn = PooledConnection {

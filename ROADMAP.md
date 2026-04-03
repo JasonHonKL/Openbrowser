@@ -39,10 +39,10 @@ _(Currently empty)_
 ## Planned (Near-term)
 
 ### Screenshots (Optional)
-- [ ] HTML→PNG rendering — For when pixels actually matter
-- [ ] Element screenshots — Capture specific element bounds
-- [ ] Viewport clipping — Configurable resolution
-- [ ] CDP screenshot API — Page.captureScreenshot compliance
+- [x] HTML→PNG rendering — For when pixels actually matter
+- [x] Element screenshots — Capture specific element bounds
+- [x] Viewport clipping — Configurable resolution
+- [x] CDP screenshot API — Page.captureScreenshot compliance
 
 ---
 
@@ -79,17 +79,17 @@ _(Currently empty)_
 
 ### Network & Protocol
 
-- [ ] **Request interception** — Intercept, modify, or block requests before they're sent (URL rewrite, header injection, body substitution)
-- [ ] **Response mocking** — Return canned responses for specific URL patterns; useful for testing agents against controlled data
-- [ ] **Request deduplication** — Avoid parallel fetches of the same resource within a time window
-- [ ] **Retry with backoff** — Configurable retry policy for transient failures (5xx, timeout, connection reset)
-- [ ] **Cookie jar API** — Full programmatic cookie management (list, set, delete, domain filtering) via CLI, CDP, and library
+- [x] **Request interception** — Intercept, modify, or block requests before they're sent (URL rewrite, header injection, body substitution)
+- [x] **Response mocking** — Return canned responses for specific URL patterns; useful for testing agents against controlled data
+- [x] **Request deduplication** — Avoid parallel fetches of the same resource within a time window
+- [x] **Retry with backoff** — Configurable retry policy for transient failures (5xx, timeout, connection reset)
+- [x] **Cookie jar API** — Full programmatic cookie management (list, set, delete, domain filtering) via CLI, CDP, and library
 - [ ] **Auth token rotation** — Auto-refresh expiring Bearer tokens when 401 is received; configurable refresh endpoint/callback
 
 ### Web Standards & Content
 
-- [ ] **PDF text extraction** — Parse PDF bytes to semantic tree (already partially implemented in `pdf.rs`); extend with table, form-field, and image extraction
-- [ ] **RSS/Atom feed parsing** — Detect and parse feed content into structured items (title, link, date, summary)
+- [x] **PDF text extraction** — Parse PDF bytes to semantic tree with table, form-field (AcroForm), and image metadata extraction
+- [x] **RSS/Atom feed parsing** — Detect and parse RSS/Atom feed content into structured items (title, link, date, summary)
 - [ ] **Robots.txt parser** — Respect crawl directives; expose `is_allowed(url)` for the knowledge graph crawler
 - [ ] **Meta refresh & redirects** — Parse `<meta http-equiv="refresh">` and JS `location.href` assignments as navigations
 - [ ] **Content encoding** — Handle gzip/brotli/zstd transfer encodings beyond what reqwest provides automatically

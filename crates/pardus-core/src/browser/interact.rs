@@ -23,7 +23,7 @@ impl Browser {
             anyhow::anyhow!("Element not found: {}", selector)
         })?;
         let app = self.temp_app();
-        let result = crate::interact::actions::click(&app, page, &handle).await?;
+        let result = crate::interact::actions::click(&app, page, &handle, &self.form_state).await?;
         drop(app);
         self.apply_navigated_result(result)
     }
@@ -46,7 +46,7 @@ impl Browser {
         }
 
         let app = self.temp_app();
-        let result = crate::interact::actions::click(&app, page, &handle).await?;
+        let result = crate::interact::actions::click(&app, page, &handle, &self.form_state).await?;
         drop(app);
         self.apply_navigated_result(result)
     }
@@ -65,24 +65,48 @@ impl Browser {
         let handle = page.query(selector).ok_or_else(|| {
             anyhow::anyhow!("Element not found: {}", selector)
         })?;
-        crate::interact::actions::type_text(page, &handle, value)
+        let (result, field_name) = {
+            let name = handle.name.clone();
+            let result = crate::interact::actions::type_text(page, &handle, value)?;
+            (result, name)
+        };
+        if let Some(name) = field_name {
+            self.form_state.set(&name, value);
+        }
+        Ok(result)
     }
 
     /// Type text into a form field by its element ID (shown in semantic tree as [#1], [#2], etc.)
     /// This is the preferred way for AI agents to fill form fields.
     pub async fn type_by_id(&mut self, id: usize, value: &str) -> anyhow::Result<InteractionResult> {
+        #[cfg(feature = "js")]
+        if self.is_js_enabled() {
+            let page = self.require_active_page()?;
+            let handle = page.find_by_element_id(id).ok_or_else(|| {
+                anyhow::anyhow!("Element with ID {} not found", id)
+            })?;
+            let name = handle.name.clone();
+            let selector = handle.selector.clone();
+            let result = crate::interact::js_interact::js_type(page, &selector, value).await?;
+            if let Some(n) = name {
+                self.form_state.set(&n, value);
+            }
+            return Ok(result);
+        }
+
         let page = self.require_active_page()?;
         let handle = page.find_by_element_id(id).ok_or_else(|| {
             anyhow::anyhow!("Element with ID {} not found", id)
         })?;
-
-        #[cfg(feature = "js")]
-        if self.is_js_enabled() {
-            let selector = handle.selector.clone();
-            return crate::interact::js_interact::js_type(page, &selector, value).await;
+        let (result, field_name) = {
+            let name = handle.name.clone();
+            let result = crate::interact::actions::type_text(page, &handle, value)?;
+            (result, name)
+        };
+        if let Some(name) = field_name {
+            self.form_state.set(&name, value);
         }
-
-        crate::interact::actions::type_text(page, &handle, value)
+        Ok(result)
     }
 
     /// Submit a form with the given field values.
@@ -146,7 +170,14 @@ impl Browser {
         let handle = page.query(selector).ok_or_else(|| {
             anyhow::anyhow!("Element not found: {}", selector)
         })?;
-        crate::interact::actions::toggle(page, &handle)
+        let result = crate::interact::actions::toggle(page, &handle)?;
+        if let Some(ref name) = handle.name {
+            let value = handle.value.as_deref().unwrap_or("on");
+            if let InteractionResult::Toggled { checked, .. } = &result {
+                self.form_state.apply_toggle(name, value, *checked);
+            }
+        }
+        Ok(result)
     }
 
     /// Select an option in a `<select>` element.
@@ -155,6 +186,10 @@ impl Browser {
         let handle = page.query(selector).ok_or_else(|| {
             anyhow::anyhow!("Element not found: {}", selector)
         })?;
-        crate::interact::actions::select_option(page, &handle, value)
+        let result = crate::interact::actions::select_option(page, &handle, value)?;
+        if let Some(ref name) = handle.name {
+            self.form_state.set(name, value);
+        }
+        Ok(result)
     }
 }

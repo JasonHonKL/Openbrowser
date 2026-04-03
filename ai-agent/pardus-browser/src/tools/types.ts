@@ -70,7 +70,7 @@ export function canExecuteInParallel(
   }
 
   // Same instance - check if operations are read-only
-  const readOnlyTools = ['browser_get_state', 'browser_list', 'browser_get_cookies', 'browser_get_storage'];
+  const readOnlyTools = ['browser_get_state', 'browser_list', 'browser_get_cookies', 'browser_get_storage', 'browser_get_action_plan'];
   const isReadOnly1 = readOnlyTools.includes(tool1.name);
   const isReadOnly2 = readOnlyTools.includes(tool2.name);
 

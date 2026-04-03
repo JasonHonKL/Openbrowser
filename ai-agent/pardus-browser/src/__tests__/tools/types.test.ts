@@ -130,5 +130,31 @@ describe('Tool Execution Types', () => {
       assert.strictEqual(groups.length, 1);
       assert.strictEqual(groups[0].tools.length, 3);
     });
+
+    it('should treat browser_get_action_plan as read-only', () => {
+      const tool1 = {
+        name: 'browser_get_action_plan',
+        args: { instance_id: 'browser-a' },
+      };
+      const tool2 = {
+        name: 'browser_get_state',
+        args: { instance_id: 'browser-a' },
+      };
+
+      assert.strictEqual(canExecuteInParallel(tool1, tool2), true);
+    });
+
+    it('should NOT allow parallel for browser_auto_fill on same instance', () => {
+      const tool1 = {
+        name: 'browser_auto_fill',
+        args: { instance_id: 'browser-a', fields: [{ key: 'email', value: 'a@b.com' }] },
+      };
+      const tool2 = {
+        name: 'browser_click',
+        args: { instance_id: 'browser-a', element_id: '#1' },
+      };
+
+      assert.strictEqual(canExecuteInParallel(tool1, tool2), false);
+    });
   });
 });

@@ -1,0 +1,2 @@
+[env]
+LIBCLANG_PATH = "/opt/homebrew/opt/llvm/lib"

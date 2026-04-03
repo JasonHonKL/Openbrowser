@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::csp::CspPolicySet;
 use crate::sandbox::SandboxPolicy;
+#[cfg(feature = "tls-pinning")]
 use crate::tls::CertificatePinningConfig;
 use crate::url_policy::UrlPolicy;
 
@@ -224,6 +225,33 @@ impl CspConfig {
     }
 }
 
+/// Retry policy for transient HTTP failures.
+#[derive(Debug, Clone)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts (default: 0 = disabled).
+    pub max_retries: u32,
+    /// Initial backoff delay in milliseconds (default: 100).
+    pub initial_backoff_ms: u64,
+    /// Maximum backoff delay in milliseconds (default: 10_000).
+    pub max_backoff_ms: u64,
+    /// Exponential backoff multiplier (default: 2.0).
+    pub backoff_factor: f64,
+    /// HTTP status codes that trigger a retry (default: 408, 429, 500, 502, 503, 504).
+    pub retry_on_statuses: Vec<u16>,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 0,
+            initial_backoff_ms: 100,
+            max_backoff_ms: 10_000,
+            backoff_factor: 2.0,
+            retry_on_statuses: vec![408, 429, 500, 502, 503, 504],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BrowserConfig {
     pub cache_dir: PathBuf,
@@ -246,6 +274,7 @@ pub struct BrowserConfig {
     pub sandbox: SandboxPolicy,
     /// Certificate pinning configuration.
     /// When set with pins, validates server certificates against known SPKI hashes or CA certs.
+    #[cfg(feature = "tls-pinning")]
     pub cert_pinning: Option<CertificatePinningConfig>,
     /// Proxy configuration for HTTP/HTTPS/SOCKS5 traffic.
     /// Supports environment variable loading (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY, NO_PROXY).
@@ -258,6 +287,11 @@ pub struct BrowserConfig {
     /// Maximum iframe nesting depth for recursive frame parsing (default: 5).
     /// 0 = root only, 1 = root + immediate iframes, etc.
     pub max_iframe_depth: usize,
+    /// Request deduplication window in milliseconds (default: 0 = disabled).
+    /// When enabled, parallel fetches of the same URL within this window share results.
+    pub dedup_window_ms: u64,
+    /// Retry policy for transient HTTP failures (default: disabled).
+    pub retry: RetryConfig,
 }
 
 impl BrowserConfig {
@@ -270,7 +304,7 @@ impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
             cache_dir: default_cache_dir(),
-            user_agent: format!("PardusBrowser/{}", env!("CARGO_PKG_VERSION")),
+            user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string(),
             timeout_ms: 10_000,
             wait_ms: 3_000,
             screenshot_endpoint: None,
@@ -282,11 +316,14 @@ impl Default for BrowserConfig {
             push: PushConfig::default(),
             url_policy: UrlPolicy::default(),
             sandbox: SandboxPolicy::default(),
+            #[cfg(feature = "tls-pinning")]
             cert_pinning: None,
             proxy: ProxyConfig::default(),
             csp: CspConfig::default(),
             parse_iframes: true,
             max_iframe_depth: 5,
+            dedup_window_ms: 0,
+            retry: RetryConfig::default(),
         }
     }
 }

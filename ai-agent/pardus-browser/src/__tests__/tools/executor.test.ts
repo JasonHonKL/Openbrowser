@@ -300,4 +300,193 @@ describe('ToolExecutor', () => {
       assert.ok(result.error?.includes('Unknown tool'));
     });
   });
+
+  describe('browser_get_action_plan', () => {
+    beforeEach(async () => {
+      await executor.executeTool('browser_new', { instance_id: 'test-browser' });
+    });
+
+    it('should get action plan', async () => {
+      const result = await executor.executeTool('browser_get_action_plan', {
+        instance_id: 'test-browser',
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(result.content.includes('Action Plan'));
+      assert.ok(result.content.includes('Form Page'));
+      assert.ok(result.content.includes('Suggested Actions'));
+    });
+
+    it('should show confidence scores', async () => {
+      const result = await executor.executeTool('browser_get_action_plan', {
+        instance_id: 'test-browser',
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(result.content.includes('95%'));
+    });
+
+    it('should fail for missing instance_id', async () => {
+      const result = await executor.executeTool('browser_get_action_plan', {});
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('instance_id'));
+    });
+
+    it('should fail for non-existent instance', async () => {
+      const result = await executor.executeTool('browser_get_action_plan', {
+        instance_id: 'non-existent',
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('not found'));
+    });
+  });
+
+  describe('browser_auto_fill', () => {
+    beforeEach(async () => {
+      await executor.executeTool('browser_new', { instance_id: 'test-browser' });
+    });
+
+    it('should auto-fill fields', async () => {
+      const result = await executor.executeTool('browser_auto_fill', {
+        instance_id: 'test-browser',
+        fields: [
+          { key: 'email', value: 'test@example.com' },
+          { key: 'password', value: 'secret' },
+        ],
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(result.content.includes('Auto-Fill Result'));
+      assert.ok(result.content.includes('Filled Fields'));
+      assert.ok(result.content.includes('email'));
+      assert.ok(result.content.includes('test@example.com'));
+    });
+
+    it('should show unmatched fields', async () => {
+      const result = await executor.executeTool('browser_auto_fill', {
+        instance_id: 'test-browser',
+        fields: [{ key: 'email', value: 'test@example.com' }],
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(result.content.includes('Unmatched Fields'));
+    });
+
+    it('should fail for missing instance_id', async () => {
+      const result = await executor.executeTool('browser_auto_fill', {
+        fields: [{ key: 'email', value: 'test@example.com' }],
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('instance_id'));
+    });
+
+    it('should fail for missing fields', async () => {
+      const result = await executor.executeTool('browser_auto_fill', {
+        instance_id: 'test-browser',
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('fields'));
+    });
+
+    it('should fail for empty fields array', async () => {
+      const result = await executor.executeTool('browser_auto_fill', {
+        instance_id: 'test-browser',
+        fields: [],
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('fields'));
+    });
+
+    it('should fail for non-existent instance', async () => {
+      const result = await executor.executeTool('browser_auto_fill', {
+        instance_id: 'non-existent',
+        fields: [{ key: 'email', value: 'test@example.com' }],
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('not found'));
+    });
+  });
+
+  describe('browser_wait', () => {
+    beforeEach(async () => {
+      await executor.executeTool('browser_new', { instance_id: 'test-browser' });
+    });
+
+    it('should wait with contentLoaded condition', async () => {
+      const result = await executor.executeTool('browser_wait', {
+        instance_id: 'test-browser',
+        condition: 'contentLoaded',
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(result.content.includes('Wait Result'));
+      assert.ok(result.content.includes('Satisfied'));
+      assert.ok(result.content.includes('contentLoaded'));
+    });
+
+    it('should wait with contentStable condition', async () => {
+      const result = await executor.executeTool('browser_wait', {
+        instance_id: 'test-browser',
+        condition: 'contentStable',
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(result.content.includes('contentStable'));
+    });
+
+    it('should wait with minInteractive condition', async () => {
+      const result = await executor.executeTool('browser_wait', {
+        instance_id: 'test-browser',
+        condition: 'minInteractive',
+        min_count: 3,
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.ok(result.content.includes('minInteractive'));
+    });
+
+    it('should fail for missing instance_id', async () => {
+      const result = await executor.executeTool('browser_wait', {
+        condition: 'contentLoaded',
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('instance_id'));
+    });
+
+    it('should fail for missing condition', async () => {
+      const result = await executor.executeTool('browser_wait', {
+        instance_id: 'test-browser',
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('condition'));
+    });
+
+    it('should fail for selector condition without selector param', async () => {
+      const result = await executor.executeTool('browser_wait', {
+        instance_id: 'test-browser',
+        condition: 'selector',
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('selector'));
+    });
+
+    it('should fail for non-existent instance', async () => {
+      const result = await executor.executeTool('browser_wait', {
+        instance_id: 'non-existent',
+        condition: 'contentLoaded',
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.ok(result.error?.includes('not found'));
+    });
+  });
 });

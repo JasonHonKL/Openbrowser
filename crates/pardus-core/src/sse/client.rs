@@ -28,18 +28,18 @@ fn sse_background_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-fn sse_http_client() -> &'static reqwest::Client {
+fn sse_http_client() -> &'static rquest::Client {
     use std::sync::OnceLock;
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    static CLIENT: OnceLock<rquest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
+        rquest::Client::builder()
             .timeout(Duration::from_secs(300))
             .connect_timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(10)
             .pool_idle_timeout(Duration::from_secs(60))
             .tcp_keepalive(Duration::from_secs(60))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
+            .unwrap_or_else(|_| rquest::Client::new())
     })
 }
 
@@ -66,7 +66,7 @@ fn spawn_sse_connection_on(
     url: String,
     url_policy: UrlPolicy,
     runtime: &tokio::runtime::Runtime,
-    http_client: reqwest::Client,
+    http_client: rquest::Client,
 ) -> SseConnectionHandle {
     let (event_tx, event_rx) = std::sync::mpsc::channel::<SseEvent>();
     let ready_state = Arc::new(AtomicU8::new(SSE_CONNECTING));
@@ -92,7 +92,7 @@ fn spawn_sse_connection_on(
 async fn run_sse_loop(
     _id: u64,
     url: String,
-    http_client: reqwest::Client,
+    http_client: rquest::Client,
     url_policy: UrlPolicy,
     event_tx: std::sync::mpsc::Sender<SseEvent>,
     ready_state: Arc<AtomicU8>,
@@ -232,7 +232,7 @@ mod tests {
         let closed_clone = closed.clone();
         let url_clone = url.clone();
 
-        let client = reqwest::Client::builder()
+        let client = rquest::Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(5))
             .pool_max_idle_per_host(2)

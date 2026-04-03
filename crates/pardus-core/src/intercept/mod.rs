@@ -2,6 +2,17 @@
 //!
 //! Provides a layer for intercepting, blocking, modifying, redirecting,
 //! and mocking HTTP requests and responses before they reach the network.
+//!
+//! ## Pause / Human-in-the-Loop
+//!
+//! Interceptors can request a **pause** by returning a [`PauseHandle`] from
+//! [`Interceptor::check_pause`] (before-request) or
+//! [`Interceptor::check_pause_response`] (after-response).
+//!
+//! When a pause is active the pipeline suspends the caller's future until the
+//! resolver sends a resume decision through the oneshot channel inside the
+//! handle.  This enables human-in-the-loop workflows such as CAPTCHA solving
+//! without any knowledge of CAPTCHAs inside `pardus-core`.
 
 pub mod builtins;
 pub mod rules;
@@ -10,6 +21,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use tokio::sync::oneshot;
 use pardus_debug::{Initiator, ResourceType};
 
 /// What an interceptor decides to do with a request or response.
@@ -25,6 +37,26 @@ pub enum InterceptAction {
     Redirect(String),
     /// Return a synthetic response without making the real HTTP call.
     Mock(MockResponse),
+}
+
+/// Handle returned by an interceptor that wants to pause the pipeline.
+///
+/// The holder (typically a Tauri frontend or any async resolver) shows the
+/// challenge to a human, then sends the desired [`InterceptAction`] through
+/// the embedded [`oneshot::Sender`].  If the sender is dropped without sending
+/// the pipeline treats the request as blocked.
+#[derive(Debug)]
+pub struct PauseHandle {
+    /// URL being paused (for display / logging).
+    pub url: String,
+    /// The caller awaits this receiver; the resolver sends the resume action.
+    pub resume_rx: oneshot::Receiver<InterceptAction>,
+}
+
+impl std::fmt::Display for PauseHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "pause({})", self.url)
+    }
 }
 
 /// Modifications to apply to a request.
@@ -102,6 +134,29 @@ pub trait Interceptor: Send + Sync {
         let _ = ctx;
         InterceptAction::Continue
     }
+
+    /// Optional hook to pause the *request* before it is sent.
+    ///
+    /// Return `Some(PauseHandle)` to suspend the pipeline.  The pipeline will
+    /// await `handle.resume_rx` and then return whatever action the resolver
+    /// sends (typically `Continue` or `Modify` with extra headers such as
+    /// cookies obtained from a solved CAPTCHA).
+    ///
+    /// Default: no pause.
+    fn check_pause(&self, _ctx: &RequestContext) -> Option<PauseHandle> {
+        None
+    }
+
+    /// Optional hook to pause after a *response* is received.
+    ///
+    /// Return `Some(PauseHandle)` to suspend the pipeline.  The resolver may
+    /// send `Continue` to proceed with the current response, or `Block` to
+    /// discard it and trigger a retry by the caller.
+    ///
+    /// Default: no pause.
+    fn check_pause_response(&self, _ctx: &ResponseContext) -> Option<PauseHandle> {
+        None
+    }
 }
 
 /// Manages a list of interceptors. Cheaply cloneable via `Arc`.
@@ -172,7 +227,17 @@ impl InterceptorManager {
     ///
     /// First non-Continue action wins: Block > Redirect > Mock > Modify.
     /// Modifications are accumulated and applied to the context in-place.
+    ///
+    /// If any interceptor returns a [`PauseHandle`] via
+    /// [`Interceptor::check_pause`], the pipeline suspends until the resolver
+    /// sends a resume decision.
     pub async fn run_before_request(&self, ctx: &mut RequestContext) -> InterceptAction {
+        // --- Pause phase ---
+        if let Some(action) = self.run_pause_check(ctx).await {
+            return action;
+        }
+
+        // --- Normal interception phase ---
         let interceptors = self
             .interceptors
             .lock()
@@ -241,7 +306,19 @@ impl InterceptorManager {
 
         InterceptAction::Continue
     }
+
+    /// Run after-response interceptors with pause support.
+    ///
+    /// If any interceptor returns a [`PauseHandle`] via
+    /// [`Interceptor::check_pause_response`], the pipeline suspends until the
+    /// resolver sends a resume decision.
     pub async fn run_after_response(&self, ctx: &mut ResponseContext) -> InterceptAction {
+        // --- Pause phase ---
+        if let Some(action) = self.run_pause_check_response(ctx).await {
+            return action;
+        }
+
+        // --- Normal interception phase ---
         let interceptors = self
             .interceptors
             .lock()
@@ -254,7 +331,6 @@ impl InterceptorManager {
             if interceptor.phase() != InterceptorPhase::AfterResponse {
                 continue;
             }
-            // Build a minimal RequestContext for matching
             let request_ctx = RequestContext {
                 url: ctx.url.clone(),
                 method: String::new(),
@@ -270,12 +346,74 @@ impl InterceptorManager {
             match interceptor.intercept_response(ctx).await {
                 InterceptAction::Block => return InterceptAction::Block,
                 InterceptAction::Continue => {}
-                InterceptAction::Modify(_) => { /* applied in-place */ }
+                InterceptAction::Modify(_) => {}
                 other => return other,
             }
         }
 
         InterceptAction::Continue
+    }
+
+    /// Check all interceptors for a before-request pause.
+    ///
+    /// Returns `Some(resume_action)` if a pause was triggered and resolved,
+    /// or `None` if no interceptor requested a pause.
+    async fn run_pause_check(&self, ctx: &RequestContext) -> Option<InterceptAction> {
+        let interceptors = self
+            .interceptors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for interceptor in interceptors.iter() {
+            if interceptor.phase() != InterceptorPhase::BeforeRequest {
+                continue;
+            }
+            if !interceptor.matches(ctx) {
+                continue;
+            }
+            if let Some(handle) = interceptor.check_pause(ctx) {
+                tracing::info!(url = %handle.url, "request paused by interceptor");
+                drop(interceptors);
+                return Some(match handle.resume_rx.await {
+                    Ok(action) => action,
+                    Err(_) => InterceptAction::Block,
+                });
+            }
+        }
+        None
+    }
+
+    /// Check all interceptors for an after-response pause.
+    async fn run_pause_check_response(&self, ctx: &ResponseContext) -> Option<InterceptAction> {
+        let interceptors = self
+            .interceptors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for interceptor in interceptors.iter() {
+            if interceptor.phase() != InterceptorPhase::AfterResponse {
+                continue;
+            }
+            let request_ctx = RequestContext {
+                url: ctx.url.clone(),
+                method: String::new(),
+                headers: ctx.headers.clone(),
+                body: None,
+                resource_type: ctx.resource_type.clone(),
+                initiator: Initiator::Other,
+                is_navigation: false,
+            };
+            if !interceptor.matches(&request_ctx) {
+                continue;
+            }
+            if let Some(handle) = interceptor.check_pause_response(ctx) {
+                tracing::info!(url = %handle.url, "response paused by interceptor");
+                drop(interceptors);
+                return Some(match handle.resume_rx.await {
+                    Ok(action) => action,
+                    Err(_) => InterceptAction::Block,
+                });
+            }
+        }
+        None
     }
 }
 

@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -46,6 +44,7 @@ impl PinAlgorithm {
         }
     }
 }
+
 
 impl fmt::Display for PinAlgorithm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -98,19 +97,19 @@ impl CertPin {
         }
     }
 
-    pub fn compute_spki_hash(certificate: &CertificateDer<'_>, algorithm: PinAlgorithm) -> String {
+    pub fn compute_spki_hash(certificate: &[u8], algorithm: PinAlgorithm) -> String {
         let data = match parse_spki(certificate) {
             Some(spki) => spki,
-            None => certificate.as_ref().to_vec(), // fallback: hash raw bytes if not valid DER
+            None => certificate.to_vec(), // fallback: hash raw bytes if not valid DER
         };
         let digest = algorithm.digest(&data);
         base64::engine::general_purpose::STANDARD.encode(&digest)
     }
 
-    pub fn matches(&self, certificate: &CertificateDer<'_>) -> bool {
+    pub fn matches(&self, cert_der: &[u8]) -> bool {
         match self {
             Self::SpkiHash { algorithm, hash } => {
-                let computed = Self::compute_spki_hash(certificate, *algorithm);
+                let computed = Self::compute_spki_hash(cert_der, *algorithm);
                 let normalized = normalize_base64_hash(hash);
                 normalized == computed
             }
@@ -119,12 +118,12 @@ impl CertPin {
                     Ok(d) => d,
                     Err(_) => return false,
                 };
-                certificate.as_ref() == decoded.as_slice()
+                cert_der == decoded.as_slice()
             }
         }
     }
 
-    pub fn matches_chain(&self, chain: &[CertificateDer<'_>]) -> bool {
+    pub fn matches_chain(&self, chain: &[Vec<u8>]) -> bool {
         chain.iter().any(|cert| self.matches(cert))
     }
 }
@@ -141,8 +140,8 @@ fn normalize_base64_hash(hash: &str) -> String {
     }
 }
 
-fn parse_spki(certificate: &CertificateDer<'_>) -> Option<Vec<u8>> {
-    asn1_parse_spki(certificate.as_ref())
+fn parse_spki(certificate: &[u8]) -> Option<Vec<u8>> {
+    asn1_parse_spki(certificate)
 }
 
 fn asn1_parse_spki(data: &[u8]) -> Option<Vec<u8>> {
@@ -329,139 +328,20 @@ pub enum TlsError {
     Tls(#[from] std::io::Error),
 }
 
-#[derive(Debug)]
-pub struct CertVerifier {
-    config: Arc<CertificatePinningConfig>,
-}
-
-impl CertVerifier {
-    pub fn new(config: Arc<CertificatePinningConfig>) -> Self {
-        Self { config }
-    }
-
-    fn verify(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        host: &str,
-    ) -> Result<(), tokio_rustls::rustls::Error> {
-        if !self.config.has_pins_for_host(host) {
-            return Ok(());
-        }
-
-        let pins = self.config.get_pins_for_host(host);
-        if pins.is_empty() {
-            return Ok(());
-        }
-
-        let full_chain: Vec<CertificateDer<'_>> = {
-            let mut chain = vec![end_entity.clone()];
-            chain.extend(intermediates.iter().cloned());
-            chain
-        };
-
-        let match_policy = self.config.policy;
-
-        let any_match = match match_policy {
-            PinMatchPolicy::RequireAny => pins.iter().any(|pin| pin.matches_chain(&full_chain)),
-            PinMatchPolicy::RequireAll => pins.iter().all(|pin| pin.matches_chain(&full_chain)),
-        };
-
-        if any_match {
-            Ok(())
-        } else {
-            Err(tokio_rustls::rustls::Error::General(String::from(
-                "certificate pinning verification failed",
-            )))
-        }
-    }
-}
-
-impl tokio_rustls::rustls::client::danger::ServerCertVerifier for CertVerifier {
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: tokio_rustls::rustls::pki_types::UnixTime,
-    ) -> Result<tokio_rustls::rustls::client::danger::ServerCertVerified, tokio_rustls::rustls::Error>
-    {
-        let host = match server_name {
-            ServerName::DnsName(dns) => dns.as_ref().to_string(),
-            _ => String::new(),
-        };
-
-        self.verify(end_entity, intermediates, &host)?;
-        Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<
-        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &tokio_rustls::rustls::DigitallySignedStruct,
-    ) -> Result<
-        tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
-        tokio_rustls::rustls::Error,
-    > {
-        Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
-        vec![
-            tokio_rustls::rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            tokio_rustls::rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            tokio_rustls::rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-            tokio_rustls::rustls::SignatureScheme::RSA_PSS_SHA256,
-            tokio_rustls::rustls::SignatureScheme::RSA_PSS_SHA384,
-            tokio_rustls::rustls::SignatureScheme::RSA_PSS_SHA512,
-            tokio_rustls::rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            tokio_rustls::rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            tokio_rustls::rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            tokio_rustls::rustls::SignatureScheme::ED25519,
-        ]
-    }
-}
-
-pub fn build_tls_connector(
-    config: &CertificatePinningConfig,
-) -> Result<tokio_rustls::TlsConnector, TlsError> {
-    let tls_config = tokio_rustls::rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(CertVerifier::new(Arc::new(config.clone()))))
-        .with_no_client_auth();
-
-    Ok(tokio_rustls::TlsConnector::from(Arc::new(tls_config)))
-}
-
 pub fn pinned_client_builder(
-    client_builder: reqwest::ClientBuilder,
+    client_builder: rquest::ClientBuilder,
     _config: &CertificatePinningConfig,
-) -> Result<reqwest::ClientBuilder, TlsError> {
-    // Note: reqwest 0.12 removed use_preconfigured_tls.
-    // Certificate pinning with custom verifier is not directly supported.
+) -> Result<rquest::ClientBuilder, TlsError> {
+    // rquest uses BoringSSL which has its own certificate verification.
+    // For now, certificate pinning with custom verifier is not directly supported.
     // Use add_root_certificate() + tls_built_in_root_certs(false) for basic pinning.
-    tracing::warn!("Certificate pinning with custom verifier is not supported in reqwest 0.12");
+    tracing::warn!("Certificate pinning with custom verifier is not yet supported with rquest");
     Ok(client_builder)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::Digest;
 
     #[test]
     fn test_normalize_base64_hash_url_safe() {
@@ -512,19 +392,9 @@ mod tests {
         let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(sha2::Sha256::digest(spki_data));
 
-        let cert = CertificateDer::from(spki_data.to_vec());
-        let computed = CertPin::compute_spki_hash(&cert, PinAlgorithm::Sha256);
-
-        match computed.as_str() {
-            "" => {
-                let normalized = normalize_base64_hash(&hash);
-                assert_ne!(normalized, "", "hash should not be empty");
-            }
-            computed_hash => {
-                let normalized = normalize_base64_hash(&hash);
-                assert_eq!(normalized, computed_hash);
-            }
-        }
+        let computed = CertPin::compute_spki_hash(spki_data, PinAlgorithm::Sha256);
+        let normalized = normalize_base64_hash(&hash);
+        assert_eq!(normalized, computed);
     }
 
     #[test]
@@ -532,8 +402,7 @@ mod tests {
         let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(sha2::Sha256::digest(b"completely-different-data"));
 
-        let cert = CertificateDer::from(b"some-spki-data-for-testing".to_vec());
-        let computed = CertPin::compute_spki_hash(&cert, PinAlgorithm::Sha256);
+        let computed = CertPin::compute_spki_hash(b"some-spki-data-for-testing", PinAlgorithm::Sha256);
         let normalized = normalize_base64_hash(&hash);
         assert_ne!(normalized, computed);
     }
@@ -544,9 +413,7 @@ mod tests {
             .encode(sha2::Sha256::digest(b"completely-different-data"));
 
         let pin = CertPin::spki_sha256(&hash);
-        assert!(!pin.matches(&CertificateDer::from(
-            b"some-spki-data-for-testing".to_vec()
-        )));
+        assert!(!pin.matches(b"some-spki-data-for-testing"));
     }
 
     #[test]
@@ -554,14 +421,14 @@ mod tests {
         let cert_der = b"fake-cert-data";
         let b64 = base64::engine::general_purpose::STANDARD.encode(cert_der);
         let pin = CertPin::ca_cert(&b64, Some("Test CA".to_string()));
-        assert!(pin.matches(&CertificateDer::from(cert_der.to_vec())));
+        assert!(pin.matches(cert_der));
     }
 
     #[test]
     fn test_cert_pin_ca_cert_mismatch() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"other-cert-data");
         let pin = CertPin::ca_cert(&b64, None);
-        assert!(!pin.matches(&CertificateDer::from(b"fake-cert-data".to_vec())));
+        assert!(!pin.matches(b"fake-cert-data"));
     }
 
     #[test]
@@ -569,10 +436,10 @@ mod tests {
         let target_spki = b"target-spki";
         let b64 = base64::engine::general_purpose::STANDARD.encode(target_spki);
         let pin = CertPin::ca_cert(&b64, None);
-        let chain = vec![
-            CertificateDer::from(b"first-cert".to_vec()),
-            CertificateDer::from(target_spki.to_vec()),
-            CertificateDer::from(b"third-cert".to_vec()),
+        let chain: Vec<Vec<u8>> = vec![
+            b"first-cert".to_vec(),
+            target_spki.to_vec(),
+            b"third-cert".to_vec(),
         ];
         assert!(pin.matches_chain(&chain));
     }
@@ -581,9 +448,9 @@ mod tests {
     fn test_cert_pin_no_match_in_chain() {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"not-in-chain");
         let pin = CertPin::ca_cert(&b64, None);
-        let chain = vec![
-            CertificateDer::from(b"first-cert".to_vec()),
-            CertificateDer::from(b"second-cert".to_vec()),
+        let chain: Vec<Vec<u8>> = vec![
+            b"first-cert".to_vec(),
+            b"second-cert".to_vec(),
         ];
         assert!(!pin.matches_chain(&chain));
     }
@@ -594,9 +461,9 @@ mod tests {
             .encode(sha2::Sha256::digest(b"not-in-chain"));
 
         let pin = CertPin::spki_sha256(&hash);
-        let chain = vec![
-            CertificateDer::from(b"first-cert".to_vec()),
-            CertificateDer::from(b"second-cert".to_vec()),
+        let chain: Vec<Vec<u8>> = vec![
+            b"first-cert".to_vec(),
+            b"second-cert".to_vec(),
         ];
         assert!(!pin.matches_chain(&chain));
     }
@@ -674,7 +541,7 @@ mod tests {
         );
 
         let pins = vec![pin1, pin2, matching_pin];
-        let chain = vec![CertificateDer::from(b"target-data".to_vec())];
+        let chain: Vec<Vec<u8>> = vec![b"target-data".to_vec()];
 
         let any_match = pins.iter().any(|pin| pin.matches_chain(&chain));
         assert!(any_match);
@@ -692,9 +559,9 @@ mod tests {
         );
 
         let pins = vec![pin1, pin2];
-        let chain = vec![
-            CertificateDer::from(b"data1".to_vec()),
-            CertificateDer::from(b"data2".to_vec()),
+        let chain: Vec<Vec<u8>> = vec![
+            b"data1".to_vec(),
+            b"data2".to_vec(),
         ];
 
         let all_match = pins.iter().all(|pin| pin.matches_chain(&chain));
