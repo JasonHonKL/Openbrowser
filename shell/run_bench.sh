@@ -6,8 +6,8 @@ set -euo pipefail
 ITERATIONS="${1:-10}"
 PORT="${2:-18899}"
 BINARY="target/release/pardus-browser"
-SITE_DIR="$(dirname "$0")/site"
-RESULTS_DIR="$(dirname "$0")/results"
+SITE_DIR="$(dirname "$0")/../bench/site"
+RESULTS_DIR="$(dirname "$0")/../bench/results"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 RESULTS_FILE="${RESULTS_DIR}/${TIMESTAMP}.json"
 

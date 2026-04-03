@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::OutputFormatArg;
@@ -12,6 +13,8 @@ pub async fn run_with_config(
     js: bool,
     wait_ms: u32,
     network_log: bool,
+    har_output: Option<PathBuf>,
+    coverage_output: Option<PathBuf>,
     config: BrowserConfig,
 ) -> Result<()> {
     let start = Instant::now();
@@ -21,7 +24,7 @@ pub async fn run_with_config(
         0, 0, url
     );
 
-    let mut browser = pardus_core::Browser::new(config);
+    let mut browser = pardus_core::Browser::new(config)?;
 
     if js {
         println!("       JS execution enabled — executing scripts…");
@@ -46,6 +49,32 @@ pub async fn run_with_config(
     if network_log {
         page.discover_subresources(&net_log);
         pardus_core::Page::fetch_subresources(&http_client, &net_log).await;
+    }
+
+    // HAR export
+    if let Some(ref har_path) = har_output {
+        let log = net_log.lock().unwrap_or_else(|e| e.into_inner());
+        let har = pardus_debug::har::HarFile::from_network_log(&log);
+        let json = serde_json::to_string_pretty(&har)?;
+        std::fs::write(har_path, json)?;
+        println!("       HAR exported to {}", har_path.display());
+    }
+
+    // Coverage report
+    if let Some(ref cov_path) = coverage_output {
+        let css_sources = pardus_debug::coverage::extract_inline_styles(&page.html);
+        let log = net_log.lock().unwrap_or_else(|e| e.into_inner());
+        let report = pardus_debug::coverage::CoverageReport::build(&page.url, &page.html, &css_sources, &log);
+        let json = serde_json::to_string_pretty(&report)?;
+        std::fs::write(cov_path, json)?;
+        println!(
+            "       Coverage report written to {} — {} CSS rules ({} matched, {} unmatched, {} untestable)",
+            cov_path.display(),
+            report.summary.total_css_rules,
+            report.summary.matched_css_rules,
+            report.summary.unmatched_css_rules,
+            report.summary.untestable_css_rules,
+        );
     }
 
     let tree = page.semantic_tree();

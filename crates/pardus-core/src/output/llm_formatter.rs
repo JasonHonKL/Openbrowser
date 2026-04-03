@@ -22,6 +22,7 @@ pub fn format_llm(tree: &SemanticTree) -> String {
     let mut inputs = Vec::new();
     let mut headings = Vec::new();
     let mut landmarks = Vec::new();
+    let mut frames = Vec::new();
 
     collect_flat(
         &tree.root,
@@ -30,6 +31,7 @@ pub fn format_llm(tree: &SemanticTree) -> String {
         &mut inputs,
         &mut headings,
         &mut landmarks,
+        &mut frames,
     );
 
     for (level, text) in &headings {
@@ -75,10 +77,18 @@ pub fn format_llm(tree: &SemanticTree) -> String {
         }
     }
 
+    if !frames.is_empty() {
+        buf.push_str("-- Frames --\n");
+        for f in &frames {
+            buf.push_str(f);
+            buf.push('\n');
+        }
+    }
+
     let s = &tree.stats;
     buf.push_str(&format!(
-        "\n[{}L {}Li {}H {}F {}I {}N total]",
-        s.landmarks, s.links, s.headings, s.forms, s.images, s.total_nodes
+        "\n[{}L {}Li {}H {}F {}I {}Fr {}N total]",
+        s.landmarks, s.links, s.headings, s.forms, s.images, s.iframes, s.total_nodes
     ));
 
     buf
@@ -103,6 +113,7 @@ fn collect_flat(
     inputs: &mut Vec<String>,
     headings: &mut Vec<(u8, String)>,
     landmarks: &mut Vec<String>,
+    frames: &mut Vec<String>,
 ) {
     match &node.role {
         SemanticRole::Heading { level } => {
@@ -201,11 +212,23 @@ fn collect_flat(
             let name = node.name.as_deref().unwrap_or("");
             landmarks.push(format!("{} \"{}\"", role.role_str(), name));
         }
+        SemanticRole::IFrame => {
+            let name = node.name.as_deref().unwrap_or("iframe");
+            let mut s = format!("iframe \"{}\"", name);
+            if let Some(href) = &node.href {
+                s.push_str(&format!(" -> {}", truncate(href, 120)));
+            }
+            let child_actions = count_actions_in(node);
+            if child_actions > 0 {
+                s.push_str(&format!(" [{} actions]", child_actions));
+            }
+            frames.push(s);
+        }
         _ => {}
     }
 
     for child in &node.children {
-        collect_flat(child, actions, links, inputs, headings, landmarks);
+        collect_flat(child, actions, links, inputs, headings, landmarks, frames);
     }
 }
 
@@ -223,6 +246,17 @@ fn count_inputs(node: &SemanticNode) -> usize {
     }
     for child in &node.children {
         count += count_inputs(child);
+    }
+    count
+}
+
+fn count_actions_in(node: &SemanticNode) -> usize {
+    let mut count = 0;
+    if node.is_interactive {
+        count += 1;
+    }
+    for child in &node.children {
+        count += count_actions_in(child);
     }
     count
 }
@@ -320,7 +354,9 @@ mod tests {
         let tree = SemanticTree::build(&html, "https://example.com");
         let out = format_llm(&tree);
 
-        assert!(!out.lines().any(|l| l.starts_with("# ") && !l.starts_with("## ")));
+        assert!(!out
+            .lines()
+            .any(|l| l.starts_with("# ") && !l.starts_with("## ")));
         assert!(out.contains("## Subtitle"));
     }
 

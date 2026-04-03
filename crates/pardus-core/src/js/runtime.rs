@@ -27,109 +27,70 @@ const EVENT_LOOP_TIMEOUT_MS: u64 = 500;
 const EVENT_LOOP_MAX_POLLS: usize = 3;
 const THREAD_JOIN_GRACE_MS: u64 = 2000;
 
-/// Analytics/tracking patterns to skip (all lowercase for case-insensitive matching)
+/// Analytics/tracking patterns to skip (all lowercase for case-insensitive matching).
+///
+/// Only genuine analytics, tracking, and ad-tech patterns are listed here.
+/// Framework names (React, Vue, etc.) and web platform APIs are NOT included —
+/// those are legitimate code that should execute normally.
 const ANALYTICS_PATTERNS: &[&str] = &[
+    // Google Analytics
     "google-analytics",
     "gtag(",
     "ga('",
     "gtag('",
+    "googletagmanager",
+    "gtm.js",
+    "datalayer",
+    // Facebook Pixel
     "facebook.com/tr",
     "fbq(",
     "fbq('",
+    // Hotjar
     "hotjar",
     "hj(",
     "hj('",
+    // Other analytics platforms
     "mixpanel",
     "amplitude",
     "segment.com",
-    "datalayer", // was dataLayer, but we lowercase the input
-    "gtm.js",
-    "googletagmanager",
-    "adsbygoogle",
-    "ads.js",
-    "doubleclick",
     "newrelic",
     "nrqueue",
     "fullstory",
+    "heap.io",
+    "logrocket",
+    // Ad tech
+    "adsbygoogle",
+    "ads.js",
+    "doubleclick",
+    // Customer support widgets
     "intercom",
     "zendesk",
     "helpscout",
-    "heap.io",
-    "logrocket",
-    // Framework patterns that cause hangs
-    "react",
-    "reactdom",
-    "vue",
-    "vuejs",
-    "angular",
-    "next.js",
-    "nuxt",
-    "ember",
-    "backbone",
-    "knockout",
-    "jquery",
-    "webpack",
-    "babel",
-    "polyfill",
-    "core-js",
-    "regenerator",
-    // Module loaders that may cause issues
-    "systemjs",
-    "requirejs",
-    "amd",
-    // Lazy loading / dynamic imports that may hang
-    "import(",
-    "__webpack_require__",
-    // Service workers and PWA
-    "serviceworker",
-    "navigator.serviceworker",
-    // Mutation observer loops
-    "mutationobserver",
-    // ResizeObserver loops
-    "resizeobserver",
-    // IntersectionObserver patterns
-    "intersectionobserver",
-    // WebGL that may crash
-    "webgl",
-    "getcontext(\"webgl\")",
-    // Web Workers
-    "worker",
-    "webworker",
-    "sharedworker",
-    // WebSocket connections
-    "websocket",
-    "new websocket",
+    // PostHog
+    "posthog",
+    "posthog.init(",
+    "posthog.com",
 ];
 
-/// Patterns that indicate scripts likely to hang or cause issues
+/// Patterns that indicate scripts likely to hang or cause issues.
+///
+/// These are narrow, targeted patterns — each one must genuinely protect
+/// against a hang or destructive operation without causing false positives
+/// on normal web scripts.
 const PROBLEMATIC_PATTERNS: &[&str] = &[
-    // Infinite loop patterns
+    // Infinite loop patterns (exact forms only)
     "while(true)",
     "while (true)",
     "for(;;)",
     "for (;;)",
     "while(1)",
     "while (1)",
-    // Event listener spam
-    "addeventlistener",
-    "attachevent",
-    // Timer spam
-    "setinterval",
-    // Animation loops
-    "requestanimationframe",
-    "requestidlecallback",
-    // Promise chains that may not resolve
-    "promise.resolve().then",
-    "promise.resolve().catch",
-    // Async generators
-    "async function*",
-    // Deprecated patterns
-    "arguments.callee",
-    // Eval usage (often dynamic code)
+    // Destructive DOM operations
+    "document.write(",
+    "document.writeln(",
+    // Eval / dynamic code generation (often leads to unbounded execution)
     "eval(",
     "new function(",
-    // Function constructor
-    "function()",
 ];
 
 // ==================== Script Extraction ====================
@@ -140,58 +101,118 @@ struct ScriptInfo {
     code: String,
 }
 
-/// Extract inline scripts from HTML, filtering out analytics/tracking.
-fn extract_scripts(html: &str) -> Vec<ScriptInfo> {
+/// Extract inline and external scripts from HTML, filtering out analytics/tracking.
+fn extract_scripts(html: &str, base_url: &Url) -> Vec<ScriptInfo> {
     let doc = Html::parse_document(html);
     let selector = match Selector::parse("script") {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
 
-    doc.select(&selector)
-        .enumerate()
-        .filter_map(|(i, el)| {
-            let is_module = el.value().attr("type") == Some("module");
+    const MAX_EXTERNAL_SCRIPTS: usize = 5;
+    const MAX_EXTERNAL_SCRIPT_SIZE: usize = 200_000; // 200 KB
+    const EXTERNAL_FETCH_TIMEOUT_MS: u64 = 5_000;
 
-            // Skip external scripts (src attribute)
-            if el.value().attr("src").is_some() {
-                return None;
+    let mut inline_scripts: Vec<ScriptInfo> = Vec::new();
+    let mut external_urls: Vec<String> = Vec::new();
+
+    for el in doc.select(&selector) {
+        // Collect external script URLs
+        if let Some(src) = el.value().attr("src") {
+            if external_urls.len() < MAX_EXTERNAL_SCRIPTS {
+                if let Ok(resolved) = base_url.join(src) {
+                    let url_str = resolved.to_string();
+                    if url_str.starts_with("http://") || url_str.starts_with("https://") {
+                        external_urls.push(url_str);
+                    }
+                }
             }
+            continue;
+        }
 
-            let mut code = el.text().collect::<String>();
+        let is_module = el.value().attr("type") == Some("module");
+        let mut code = el.text().collect::<String>();
 
-            // Transform module syntax for basic support
-            if is_module {
-                code = transform_module_syntax(&code);
+        if is_module {
+            code = transform_module_syntax(&code);
+        }
+
+        if code.trim().is_empty() || code.len() > MAX_SCRIPT_SIZE {
+            continue;
+        }
+        if is_analytics_script(&code) || is_problematic_script(&code) {
+            continue;
+        }
+
+        inline_scripts.push(ScriptInfo {
+            name: format!("inline_script_{}.js", inline_scripts.len()),
+            code,
+        });
+        if inline_scripts.len() >= MAX_SCRIPTS {
+            break;
+        }
+    }
+
+    // Fetch external scripts synchronously (we're already inside a thread)
+    let mut all_scripts = inline_scripts;
+    for (i, url) in external_urls.into_iter().enumerate() {
+        if all_scripts.len() >= MAX_SCRIPTS {
+            break;
+        }
+        match fetch_external_script(&url, MAX_EXTERNAL_SCRIPT_SIZE, EXTERNAL_FETCH_TIMEOUT_MS) {
+            Ok(code) => {
+                if !code.trim().is_empty()
+                    && code.len() <= MAX_SCRIPT_SIZE
+                    && !is_analytics_script(&code)
+                    && !is_problematic_script(&code)
+                {
+                    eprintln!("[JS] Fetched external script {}: {} ({} bytes)", i, url, code.len());
+                    all_scripts.push(ScriptInfo {
+                        name: format!("external_script_{}.js", i),
+                        code,
+                    });
+                }
             }
-
-            // Skip empty scripts
-            if code.trim().is_empty() {
-                return None;
+            Err(e) => {
+                eprintln!("[JS] Failed to fetch external script {}: {}", url, e);
             }
+        }
+    }
 
-            // Skip large scripts
-            if code.len() > MAX_SCRIPT_SIZE {
-                return None;
-            }
+    all_scripts
+}
 
-            // Skip analytics/tracking scripts
-            if is_analytics_script(&code) {
-                return None;
-            }
+/// Fetch an external JavaScript file via HTTP.
+fn fetch_external_script(url: &str, max_size: usize, timeout_ms: u64) -> anyhow::Result<String> {
+    let parsed = Url::parse(url)?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!("Non-HTTP scheme: {}", parsed.scheme());
+    }
 
-            // Skip scripts with problematic patterns (infinite loops, event spam, etc.)
-            if is_problematic_script(&code) {
-                return None;
-            }
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms))
+        .user_agent("PardusBrowser/0.1.0")
+        .build()?;
 
-            Some(ScriptInfo {
-                name: format!("inline_script_{}.js", i),
-                code,
-            })
-        })
-        .take(MAX_SCRIPTS)
-        .collect()
+    let response = client.get(url).send()?;
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        anyhow::bail!("HTTP {}", status);
+    }
+
+    if let Some(len) = response
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        if len > max_size {
+            anyhow::bail!("Script too large: {} bytes", len);
+        }
+    }
+
+    let body = response.text()?;
+    Ok(body)
 }
 
 fn is_analytics_script(code: &str) -> bool {
@@ -586,8 +607,8 @@ pub async fn execute_js(
         Err(_) => return Ok(html.to_string()),
     };
 
-    // Extract scripts from HTML
-    let mut scripts = extract_scripts(html);
+    // Extract scripts from HTML (inline + external)
+    let mut scripts = extract_scripts(html, &base);
 
     // Apply sandbox-configurable script limits
     if sandbox.js_max_scripts > 0 {
@@ -647,14 +668,14 @@ mod tests {
 
     #[test]
     fn test_extract_scripts_empty_html() {
-        let scripts = extract_scripts("<html></html>");
+        let scripts = extract_scripts("<html></html>", &Url::parse("https://example.com").unwrap());
         assert!(scripts.is_empty());
     }
 
     #[test]
     fn test_extract_scripts_no_scripts() {
         let html = r#"<html><body><p>Hello</p></body></html>"#;
-        let scripts = extract_scripts(html);
+        let scripts = extract_scripts(html, &Url::parse("https://example.com").unwrap());
         assert!(scripts.is_empty());
     }
 
@@ -665,7 +686,7 @@ mod tests {
                 <script>document.body.innerHTML = 'Hello';</script>
             </body></html>
         "#;
-        let scripts = extract_scripts(html);
+        let scripts = extract_scripts(html, &Url::parse("https://example.com").unwrap());
         assert_eq!(scripts.len(), 1);
         assert_eq!(scripts[0].name, "inline_script_0.js");
         assert!(scripts[0].code.contains("document.body.innerHTML"));
@@ -680,7 +701,7 @@ mod tests {
                 <script>var c = 3;</script>
             </body></html>
         "#;
-        let scripts = extract_scripts(html);
+        let scripts = extract_scripts(html, &Url::parse("https://example.com").unwrap());
         assert_eq!(scripts.len(), 3);
     }
 
@@ -692,7 +713,7 @@ mod tests {
                 <script>inline code</script>
             </body></html>
         "#;
-        let scripts = extract_scripts(html);
+        let scripts = extract_scripts(html, &Url::parse("https://example.com").unwrap());
         assert_eq!(scripts.len(), 1);
         assert!(scripts[0].code.contains("inline code"));
     }
@@ -707,7 +728,7 @@ export function hello() {}</script>
                 <script>regular script</script>
             </body></html>
         "#;
-        let scripts = extract_scripts(html);
+        let scripts = extract_scripts(html, &Url::parse("https://example.com").unwrap());
         assert_eq!(scripts.len(), 2);
         assert!(scripts[0].code.contains("const x = 1;"));
         assert!(scripts[0].code.contains("function hello() {}"));
@@ -725,7 +746,7 @@ export function hello() {}</script>
                 <script>real code</script>
             </body></html>
         "#;
-        let scripts = extract_scripts(html);
+        let scripts = extract_scripts(html, &Url::parse("https://example.com").unwrap());
         assert_eq!(scripts.len(), 1);
     }
 
@@ -736,7 +757,7 @@ export function hello() {}</script>
             r#"<html><body><script>{}</script></body></html>"#,
             large_code
         );
-        let scripts = extract_scripts(&html);
+        let scripts = extract_scripts(&html, &Url::parse("https://example.com").unwrap());
         assert!(scripts.is_empty());
     }
 
@@ -748,7 +769,7 @@ export function hello() {}</script>
         }
         scripts_html.push_str("</body></html>");
 
-        let scripts = extract_scripts(&scripts_html);
+        let scripts = extract_scripts(&scripts_html, &Url::parse("https://example.com").unwrap());
         assert_eq!(scripts.len(), MAX_SCRIPTS);
     }
 
@@ -847,17 +868,31 @@ export function hello() {}</script>
     }
 
     #[test]
-    fn test_is_problematic_script_event_listeners() {
-        assert!(is_problematic_script("element.addEventListener('click', handler)"));
-        assert!(is_problematic_script("setInterval(function() {}, 100)"));
-        assert!(is_problematic_script("requestAnimationFrame(render)"));
+    fn test_is_problematic_script_not_flagged() {
+        // These are standard web APIs — they should NOT be flagged
+        assert!(!is_problematic_script("element.addEventListener('click', handler)"));
+        assert!(!is_problematic_script("setInterval(function() {}, 100)"));
+        assert!(!is_problematic_script("requestAnimationFrame(render)"));
+        assert!(!is_problematic_script("new MutationObserver(function() {})"));
     }
 
     #[test]
-    fn test_is_problematic_script_react_vue() {
-        assert!(is_analytics_script("const React = require('react')"));
-        assert!(is_analytics_script("import Vue from 'vue'"));
-        assert!(is_analytics_script("angular.module('app')"));
+    fn test_is_problematic_script_destructive() {
+        // These ARE destructive and should be flagged
+        assert!(is_problematic_script("document.write('overwrites everything')"));
+        assert!(is_problematic_script("document.writeln('content')"));
+        assert!(is_problematic_script("eval('dynamic code')"));
+    }
+
+    #[test]
+    fn test_frameworks_not_analytics() {
+        // Framework names should NOT be treated as analytics
+        assert!(!is_analytics_script("const React = require('react')"));
+        assert!(!is_analytics_script("import Vue from 'vue'"));
+        assert!(!is_analytics_script("angular.module('app')"));
+        assert!(!is_analytics_script("window.__NEXT_DATA__ = {}"));
+        assert!(!is_analytics_script("import('module')"));
+        assert!(!is_analytics_script("__webpack_require__('main')"));
     }
 
     #[test]

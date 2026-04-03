@@ -6,7 +6,7 @@ use crate::protocol::target::CdpSession;
 
 pub struct EmulationDomain;
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for EmulationDomain {
     fn domain_name(&self) -> &'static str {
         "Emulation"

@@ -25,3 +25,4 @@ shell-words = "1"
 [features]
 default = []
 js = ["pardus-core/js"]
+screenshot = ["pardus-core/screenshot"]

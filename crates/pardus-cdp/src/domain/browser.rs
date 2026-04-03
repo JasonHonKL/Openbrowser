@@ -6,7 +6,7 @@ use crate::protocol::target::CdpSession;
 
 pub struct BrowserDomain;
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for BrowserDomain {
     fn domain_name(&self) -> &'static str {
         "Browser"

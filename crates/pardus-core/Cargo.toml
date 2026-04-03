@@ -56,6 +56,9 @@ blake3 = { workspace = true }
 lol_html = { workspace = true }
 bytes = { workspace = true }
 
+# PDF text extraction
+pdf-extract = "0.10"
+
 # WebSocket support
 tokio-tungstenite = "0.26"
 tungstenite = "0.26"
@@ -63,10 +66,16 @@ tungstenite = "0.26"
 # HTTP/2 push (optional — low-level PUSH_PROMISE reception)
 h2 = { workspace = true, optional = true }
 
+# Screenshot support (optional — enables HTML→PNG via headless Chrome)
+chromiumoxide = { version = "0.9", default-features = false, optional = true }
+image = { version = "0.25", optional = true }
+which = { version = "7", optional = true }
+
 [features]
 default = []
-js = ["deno_core", "reqwest/stream"]
+js = ["deno_core", "reqwest/stream", "reqwest/blocking"]
 h2-push = ["h2"]
+screenshot = ["chromiumoxide", "image", "which"]
 
 [dev-dependencies]
 tempfile = "3"

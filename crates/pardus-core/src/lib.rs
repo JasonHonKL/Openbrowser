@@ -1,5 +1,6 @@
 pub mod app;
 pub mod browser;
+pub mod frame;
 pub mod cache;
 pub mod config;
 pub mod csp;
@@ -12,6 +13,9 @@ pub mod navigation;
 pub mod output;
 pub mod page;
 pub mod parser;
+#[cfg(feature = "screenshot")]
+pub mod screenshot;
+pub mod pdf;
 pub mod prefetch;
 pub mod push;
 pub mod resource;
@@ -32,6 +36,7 @@ pub use page::Page;
 pub use sandbox::{JsSandboxMode, SandboxPolicy};
 pub use page::PageSnapshot;
 pub use url_policy::UrlPolicy;
+pub use frame::{FrameId, FrameData, FrameTree};
 pub use tls::{CertificatePinningConfig, CertPin, PinAlgorithm, PinMatchPolicy};
 pub use csp::{CspPolicy, CspPolicySet, CspDirectiveKind, CspCheckResult};
 #[cfg(feature = "js")]

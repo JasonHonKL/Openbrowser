@@ -12,3 +12,6 @@ adapters/node/pardus-puppeteer/node_modules/
 adapters/node/pardus-puppeteer/dist/
 adapters/node/pardus-playwright/node_modules/
 adapters/node/pardus-playwright/dist/
+
+# AI Agent (separate TypeScript project)
+ai-agent/

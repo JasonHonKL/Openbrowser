@@ -165,7 +165,7 @@ impl From<DateFromFieldsError> for TemporalError {
 }
 
 impl From<DateAddError> for TemporalError {
-    fn from(error: DateAddError) -> Self {
+    fn from(_error: DateAddError) -> Self {
         TemporalError::range().with_message("Date addition error.")
     }
 }

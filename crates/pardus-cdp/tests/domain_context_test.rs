@@ -73,6 +73,7 @@ fn test_target_entry_creation() {
         html: Some("<html><body>Hello</body></html>".to_string()),
         title: Some("Example".to_string()),
         js_enabled: true,
+        frame_tree_json: None,
     };
 
     assert_eq!(entry.url, "https://example.com");
@@ -88,6 +89,7 @@ fn test_target_entry_clone() {
         html: Some("<html></html>".to_string()),
         title: None,
         js_enabled: false,
+        frame_tree_json: None,
     };
 
     let cloned = entry.clone();
@@ -116,6 +118,7 @@ async fn test_get_html() {
             html: Some("<html><body>Test</body></html>".to_string()),
             title: Some("Test".to_string()),
             js_enabled: false,
+            frame_tree_json: None,
         });
     }
 
@@ -144,6 +147,7 @@ async fn test_get_url() {
             html: None,
             title: None,
             js_enabled: false,
+            frame_tree_json: None,
         });
     }
 
@@ -170,6 +174,7 @@ async fn test_get_title() {
             html: None,
             title: Some("Page Title".to_string()),
             js_enabled: false,
+            frame_tree_json: None,
         });
     }
 
@@ -194,6 +199,7 @@ async fn test_get_target_entry() {
         html: Some("<html></html>".to_string()),
         title: Some("Title".to_string()),
         js_enabled: true,
+        frame_tree_json: None,
     };
 
     {

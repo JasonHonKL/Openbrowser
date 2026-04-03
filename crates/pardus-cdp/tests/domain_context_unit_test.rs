@@ -57,6 +57,7 @@ mod tests {
             html: Some("<html><body>Hello</body></html>".to_string()),
             title: Some("Example".to_string()),
             js_enabled: true,
+            frame_tree_json: None,
         };
 
         assert_eq!(entry.url, "https://example.com");
@@ -72,6 +73,7 @@ mod tests {
             html: Some("<html></html>".to_string()),
             title: None,
             js_enabled: false,
+            frame_tree_json: None,
         };
 
         let cloned = entry.clone();

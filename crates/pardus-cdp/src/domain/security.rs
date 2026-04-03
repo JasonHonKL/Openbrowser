@@ -6,7 +6,7 @@ use crate::protocol::target::CdpSession;
 
 pub struct SecurityDomain;
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for SecurityDomain {
     fn domain_name(&self) -> &'static str {
         "Security"

@@ -13,7 +13,7 @@ fn resolve_target_id(session: &CdpSession) -> &str {
     session.target_id.as_deref().unwrap_or("default")
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for DomDomain {
     fn domain_name(&self) -> &'static str {
         "DOM"
@@ -38,14 +38,23 @@ impl CdpDomainHandler for DomDomain {
                 HandleResult::Ack
             }
             "getDocument" => {
-                let (html_str, url) = (ctx.get_html(target_id).await, ctx.get_url(target_id).await);
-                let mut nm = ctx.node_map.lock().await;
-                let doc = match (html_str, url) {
-                    (Some(html_str), Some(url)) => {
-                        let page = pardus_core::Page::from_html(&html_str, &url);
-                        build_document_tree(&page, &mut nm)
+                let requested_frame_id = params["frameId"].as_str();
+                let frame_tree_json = ctx.get_frame_tree_json(target_id).await;
+
+                let (html_str, url) = if let Some(fid) = requested_frame_id {
+                    match resolve_frame_html(fid, &frame_tree_json) {
+                        Some(pair) => pair,
+                        None => (ctx.get_html(target_id).await.unwrap_or_default(), ctx.get_url(target_id).await.unwrap_or_default()),
                     }
-                    _ => empty_document(&mut nm),
+                } else {
+                    (ctx.get_html(target_id).await.unwrap_or_default(), ctx.get_url(target_id).await.unwrap_or_default())
+                };
+                let mut nm = ctx.node_map.lock().await;
+                let doc = if !html_str.is_empty() {
+                    let page = pardus_core::Page::from_html(&html_str, &url);
+                    build_document_tree(&page, &mut nm)
+                } else {
+                    empty_document(&mut nm)
                 };
                 HandleResult::Success(doc)
             }
@@ -454,4 +463,27 @@ fn empty_document(node_map: &mut NodeMap) -> Value {
             "title": "",
         }
     })
+}
+
+fn find_frame_by_id<'a>(frame: &'a serde_json::Value, id: &str) -> Option<&'a serde_json::Value> {
+    let frame_id = frame.get("id")?.as_str()?;
+    if frame_id == id {
+        return Some(frame);
+    }
+    let children = frame.get("child_frames")?.as_array()?;
+    for child in children {
+        if let Some(found) = find_frame_by_id(child, id) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn resolve_frame_html(frame_id: &str, frame_tree_json: &Option<String>) -> Option<(String, String)> {
+    let json_str = frame_tree_json.as_ref()?;
+    let tree: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    let frame = find_frame_by_id(&tree["root"], frame_id)?;
+    let html = frame.get("html")?.as_str()?.to_string();
+    let url = frame.get("url")?.as_str()?.to_string();
+    Some((html, url))
 }

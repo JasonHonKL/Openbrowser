@@ -11,7 +11,7 @@ fn resolve_target_id(session: &CdpSession) -> &str {
     session.target_id.as_deref().unwrap_or("default")
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for InputDomain {
     fn domain_name(&self) -> &'static str {
         "Input"

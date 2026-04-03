@@ -80,6 +80,15 @@ fn node_description(node: &SemanticNode) -> String {
                 parts.push(format!("\"{name}\""));
             }
         }
+        SemanticRole::IFrame => {
+            parts.push("iframe".to_string());
+            if let Some(name) = &node.name {
+                parts.push(format!("\"{name}\""));
+            }
+            if let Some(href) = &node.href {
+                parts.push(format!("→ {href}"));
+            }
+        }
         _ => {
             parts.push(node.role.to_string());
             if let Some(name) = &node.name {

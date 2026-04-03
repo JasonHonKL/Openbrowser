@@ -16,7 +16,7 @@ fn invalid_params(msg: &str) -> HandleResult {
     })
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for TargetDomain {
     fn domain_name(&self) -> &'static str {
         "Target"
@@ -40,6 +40,7 @@ impl CdpDomainHandler for TargetDomain {
                     html: None,
                     title: None,
                     js_enabled: false,
+                    frame_tree_json: None,
                 });
 
                 let _ = ctx.event_bus.send(CdpEvent {

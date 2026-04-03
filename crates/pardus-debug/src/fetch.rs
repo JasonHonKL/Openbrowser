@@ -56,6 +56,7 @@ where
         let cache_check = cache_check.clone();
 
         join_set.spawn(async move {
+            let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
             let start = Instant::now();
 
             if let Some(ref check) = *cache_check {
@@ -69,6 +70,7 @@ where
                         r.body_size = Some(hit.body_size);
                         r.timing_ms = timing;
                         r.response_headers = vec![("x-push-cache".to_string(), "hit".to_string())];
+                        r.started_at = Some(started_at);
                     }
                     drop(permit);
                     return;
@@ -77,8 +79,9 @@ where
 
             let result = client.get(&url).send().await;
 
-            let (status, status_text, content_type, body_size, headers, error) = match result {
+            let (status, status_text, content_type, body_size, headers, error, http_ver) = match result {
                 Ok(resp) => {
+                    let ver = format_http_version(resp.version());
                     let s = resp.status().as_u16();
                     let st = resp.status().canonical_reason().unwrap_or("").to_string();
                     let ct = resp
@@ -92,9 +95,9 @@ where
                         .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
                         .collect();
                     let body = resp.bytes().await.unwrap_or_default();
-                    (Some(s), Some(st), ct, Some(body.len()), hdrs, None)
+                    (Some(s), Some(st), ct, Some(body.len()), hdrs, None, ver)
                 }
-                Err(e) => (None, None, None, None, Vec::new(), Some(e.to_string())),
+                Err(e) => (None, None, None, None, Vec::new(), Some(e.to_string()), "unknown".to_string()),
             };
 
             let timing = Some(start.elapsed().as_millis());
@@ -109,6 +112,8 @@ where
                     r.timing_ms = timing;
                     r.response_headers = headers;
                     r.error = error;
+                    r.started_at = Some(started_at);
+                    r.http_version = Some(http_ver);
                 }
             }
 
@@ -119,6 +124,17 @@ where
     while let Some(_result) = join_set.join_next().await {
         // Each task handles its own error recording
     }
+}
+
+fn format_http_version(version: http::Version) -> String {
+    match version {
+        http::Version::HTTP_09 => "HTTP/0.9",
+        http::Version::HTTP_10 => "HTTP/1.0",
+        http::Version::HTTP_11 => "HTTP/1.1",
+        http::Version::HTTP_2 => "HTTP/2",
+        http::Version::HTTP_3 => "HTTP/3",
+        _ => "unknown",
+    }.to_string()
 }
 
 #[cfg(test)]

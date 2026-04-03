@@ -232,6 +232,9 @@ pub struct BrowserConfig {
     pub wait_ms: u32,
     pub screenshot_endpoint: Option<String>,
     pub screenshot_timeout_ms: u64,
+    /// Path to Chrome/Chromium binary for screenshot capture.
+    /// If None, auto-discovers or downloads Chromium when the `screenshot` feature is enabled.
+    pub screenshot_chrome_path: Option<PathBuf>,
     pub viewport_width: u32,
     pub viewport_height: u32,
     pub connection_pool: ConnectionPoolConfig,
@@ -250,6 +253,11 @@ pub struct BrowserConfig {
     /// CSP enforcement configuration.
     /// Defaults to disabled — no CSP enforcement unless explicitly enabled.
     pub csp: CspConfig,
+    /// Whether to recursively parse and fetch iframe content (default: true).
+    pub parse_iframes: bool,
+    /// Maximum iframe nesting depth for recursive frame parsing (default: 5).
+    /// 0 = root only, 1 = root + immediate iframes, etc.
+    pub max_iframe_depth: usize,
 }
 
 impl BrowserConfig {
@@ -267,6 +275,7 @@ impl Default for BrowserConfig {
             wait_ms: 3_000,
             screenshot_endpoint: None,
             screenshot_timeout_ms: 10_000,
+            screenshot_chrome_path: None,
             viewport_width: 1280,
             viewport_height: 720,
             connection_pool: ConnectionPoolConfig::default(),
@@ -276,6 +285,8 @@ impl Default for BrowserConfig {
             cert_pinning: None,
             proxy: ProxyConfig::default(),
             csp: CspConfig::default(),
+            parse_iframes: true,
+            max_iframe_depth: 5,
         }
     }
 }

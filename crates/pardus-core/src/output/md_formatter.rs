@@ -148,6 +148,14 @@ fn node_description(node: &SemanticNode) -> String {
             let name = node.name.as_deref().unwrap_or("");
             format!("dialog  \"{name}\"")
         }
+        SemanticRole::IFrame => {
+            let name = node.name.as_deref().unwrap_or("iframe");
+            let mut s = format!("iframe  \"{name}\"");
+            if let Some(href) = &node.href {
+                s.push_str(&format!("  → {href}"));
+            }
+            s
+        }
         SemanticRole::Article => {
             let name = node.name.as_deref().unwrap_or("");
             let summary = compact_children(node);

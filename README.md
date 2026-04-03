@@ -23,10 +23,6 @@ AI agents don't need screenshots. They need to know what's on a page, what they 
 
 No Chromium binary. No Docker. No GPU. Just HTTP + HTML parsing.
 
-## Demo
-
-[demo.mp4](demo/demo.mp4)
-
 ## Features
 
 - **Semantic tree output** — ARIA roles, headings, landmarks, interactive elements
@@ -40,6 +36,7 @@ No Chromium binary. No Docker. No GPU. Just HTTP + HTML parsing.
 - **Session persistence** — Cookies, headers, localStorage across requests
 - **CDP server** — Chrome DevTools Protocol WebSocket endpoint for automation (14 domains)
 - **Knowledge Graph** — Site-level state map: BFS crawl produces a graph of view-states (semantic + network fingerprints) and verified transitions (link clicks, hash nav, pagination)
+- **PDF extraction** — Navigate to PDF URLs and get a semantic tree back: per-page text extraction with heading detection, no external dependencies
 - **JavaScript execution** — Optional V8 via deno_core with DOM ops (enabled by default, see known issues)
 - **Persistent REPL** — Interactive session with persistent state across commands
 - **Tab management** — Multiple tabs with independent history and state
@@ -57,7 +54,7 @@ rustup install nightly
 # Clone and build
 git clone https://github.com/user/pardus-browser.git
 cd pardus-browser
-cargo +nightly install --path crates/pardus-cli
+cargo +nightly install --path crates/pardus-cli --feature js 
 ```
 
 ### Docker
@@ -102,6 +99,45 @@ pardus-browser navigate https://example.com --network-log
 # Network log with JSON output
 pardus-browser navigate https://example.com --format json --network-log
 ```
+
+### PDF viewing
+
+Navigate to a PDF URL the same way you'd navigate to an HTML page. The browser detects `application/pdf` responses, extracts text per-page, and builds a semantic tree with heading detection.
+
+```bash
+pardus-browser navigate https://example.com/report.pdf
+```
+
+```
+00:00  pardus-browser navigate https://example.com/report.pdf
+00:01  connected — parsing semantic state…
+       document  "Annual Report 2026"  [role: document]
+       ├── heading (h1)  "Annual Report 2026"
+       ├── text  "This report summarizes our financial performance..."
+       ├── heading (h2)  "Revenue"
+       ├── text  "Revenue increased by 15% year-over-year..."
+       ├── heading (h2)  "Expenses"
+       └── text  "Operating expenses decreased due to efficiency gains..."
+00:01  semantic tree ready — 0 landmarks, 0 links, 3 headings, 0 actions
+```
+
+Works with all output formats and subcommands:
+
+```bash
+# JSON output
+pardus-browser navigate https://example.com/report.pdf --format json
+
+# Tree format
+pardus-browser navigate https://example.com/report.pdf --format tree
+```
+
+**How it works:**
+
+1. **Content-type detection** — Responses with `application/pdf` are routed to PDF extraction instead of HTML parsing
+2. **Text extraction** — Uses `pdf-extract` (lopdf) to extract text per page
+3. **Heading detection** — Heuristics classify blocks as headings: first block on page (h1/title), ALL CAPS text, short text without sentence-ending punctuation (h2)
+4. **Semantic tree** — Each page becomes a `region` node (named "Page N" for multi-page PDFs), text blocks become `text` nodes, headings become `heading` nodes
+5. **Zero config** — No flags needed, works automatically on PDF URLs
 
 ### Output formats
 
@@ -505,7 +541,7 @@ pardus-browser
 └── crates/pardus-cli     CLI binary
 ```
 
-**pardus-core** — The engine. The `Browser` type is the main entry point — it owns the HTTP client, tab state, and provides navigation + interaction as a single cohesive API. Internally, it fetches pages via `reqwest`, parses HTML with `scraper`, and builds semantic trees mapping ARIA roles and interactive states. Provides page interaction (click, type, submit, wait, scroll) with automatic tab updates on navigation. Includes tab management, history navigation, session persistence (cookies, headers, localStorage), and optional JavaScript execution via deno_core (enabled by default). Outputs Markdown, tree, or JSON.
+**pardus-core** — The engine. The `Browser` type is the main entry point — it owns the HTTP client, tab state, and provides navigation + interaction as a single cohesive API. Internally, it fetches pages via `reqwest`, parses HTML with `scraper`, and builds semantic trees mapping ARIA roles and interactive states. PDF URLs are detected by content-type and extracted into semantic trees via `pdf-extract`. Provides page interaction (click, type, submit, wait, scroll) with automatic tab updates on navigation. Includes tab management, history navigation, session persistence (cookies, headers, localStorage), and optional JavaScript execution via deno_core (enabled by default). Outputs Markdown, tree, or JSON.
 
 **pardus-debug** — Network debugging. Records all HTTP requests to a shared `NetworkLog`, discovers subresources from parsed HTML (stylesheets, scripts, images, fonts, media), fetches them in parallel, and formats DevTools-style request tables.
 
@@ -553,7 +589,7 @@ pardus-browser
 
 See [ROADMAP.md](ROADMAP.md) for the full project roadmap, including:
 
-- ✅ **Completed features** — Semantic tree, CDP server, JS execution, REPL, tab management, Knowledge Graph
+- ✅ **Completed features** — Semantic tree, CDP server, JS execution, REPL, tab management, Knowledge Graph, PDF extraction
 - 🔧 **In progress** — CDP ↔ Browser API integration, JS-level interactions
 - 📋 **Near-term** — Proxy support, screenshots, KG-driven agent loop
 - 🚀 **Future** — AI agent features, performance, WebSocket/SSE, bindings for Python/Node.js

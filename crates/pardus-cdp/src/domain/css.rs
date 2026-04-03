@@ -6,7 +6,7 @@ use crate::protocol::target::CdpSession;
 
 pub struct CssDomain;
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for CssDomain {
     fn domain_name(&self) -> &'static str {
         "CSS"
@@ -109,8 +109,31 @@ impl CdpDomainHandler for CssDomain {
             "setFontFamilies" => HandleResult::Ack,
             "setFontVariations" => HandleResult::Ack,
             "setRuleSelector" => HandleResult::Ack,
-            "startRuleUsageTracking" => HandleResult::Success(serde_json::json!({})),
-            "stopRuleUsageTracking" => HandleResult::Success(serde_json::json!({ "ruleUsage": [] })),
+            "startRuleUsageTracking" => HandleResult::Ack,
+            "stopRuleUsageTracking" => {
+                let target_id = _session.target_id.as_deref().unwrap_or("default");
+                let mut rule_usage = Vec::new();
+                if let Some(html_str) = ctx.get_html(target_id).await {
+                    let html = scraper::Html::parse_document(&html_str);
+                    let url = ctx.get_url(target_id).await.unwrap_or_default();
+                    let css_sources = pardus_debug::coverage::extract_inline_styles(&html);
+                    let log = ctx.app.network_log.lock().unwrap_or_else(|e| e.into_inner());
+                    let report = pardus_debug::coverage::CoverageReport::build(
+                        &url, &html, &css_sources, &log,
+                    );
+                    for stylesheet in &report.css.stylesheets {
+                        for rule in &stylesheet.rules {
+                            rule_usage.push(serde_json::json!({
+                                "styleSheetId": stylesheet.source,
+                                "startOffset": 0,
+                                "endOffset": 0,
+                                "used": rule.status == "matched",
+                            }));
+                        }
+                    }
+                }
+                HandleResult::Success(serde_json::json!({ "ruleUsage": rule_usage }))
+            }
             "takeCoverageDelta" => HandleResult::Success(serde_json::json!({ "coverage": [] })),
             "takeComputedStyleUpdates" => HandleResult::Success(serde_json::json!({ "computedStyles": [] })),
             "locateNode" => HandleResult::Ack,

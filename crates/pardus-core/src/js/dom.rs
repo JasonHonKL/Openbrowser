@@ -1454,6 +1454,48 @@ impl DomDocument {
                 .map_or(false, |n| n.node_type == DomNodeType::Element)
         })
     }
+
+    // Shadow DOM stubs (for test compatibility — full shadow DOM not yet implemented)
+
+    /// Returns `None` — shadow DOM is not yet supported.
+    pub fn get_shadow_root(&self, _node_id: NodeId) -> Option<NodeId> {
+        None
+    }
+
+    /// Returns `false` — shadow DOM is not yet supported.
+    pub fn is_shadow_host(&self, _node_id: NodeId) -> bool {
+        false
+    }
+
+    /// Collect all descendant elements (no shadow DOM piercing).
+    pub fn collect_all_elements_deep(&self, node_id: NodeId) -> Vec<NodeId> {
+        let mut results = Vec::new();
+        self.collect_all_elements_deep_recursive(node_id, &mut results);
+        results
+    }
+
+    fn collect_all_elements_deep_recursive(&self, node_id: NodeId, results: &mut Vec<NodeId>) {
+        let node = match self.nodes.get(&node_id) {
+            Some(n) => n,
+            None => return,
+        };
+        if node.node_type == DomNodeType::Element {
+            results.push(node_id);
+        }
+        for &child_id in &node.children {
+            self.collect_all_elements_deep_recursive(child_id, results);
+        }
+    }
+
+    /// Query selector alias (no shadow DOM piercing).
+    pub fn query_selector_deep(&self, node_id: NodeId, selector: &str) -> Option<NodeId> {
+        self.query_selector(node_id, selector)
+    }
+
+    /// Query selector all alias (no shadow DOM piercing).
+    pub fn query_selector_all_deep(&self, node_id: NodeId, selector: &str) -> Vec<NodeId> {
+        self.query_selector_all(node_id, selector)
+    }
 }
 
 fn format_style_property(existing: &str, property: &str, value: &str) -> String {

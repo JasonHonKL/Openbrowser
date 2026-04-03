@@ -29,7 +29,7 @@ pub async fn list(browser: &pardus_core::Browser, format: OutputFormatArg) -> Re
 pub async fn open_with_config(url: &str, js: bool, proxy_config: pardus_core::ProxyConfig) -> Result<()> {
     let mut browser_config = pardus_core::BrowserConfig::default();
     browser_config.proxy = proxy_config;
-    let mut browser = pardus_core::Browser::new(browser_config);
+    let mut browser = pardus_core::Browser::new(browser_config)?;
     let tab = if js {
         browser.navigate_with_js(url, 3000).await?
     } else {
@@ -43,7 +43,7 @@ pub async fn open_with_config(url: &str, js: bool, proxy_config: pardus_core::Pr
 pub async fn navigate_with_config(url: &str, proxy_config: pardus_core::ProxyConfig) -> Result<()> {
     let mut browser_config = pardus_core::BrowserConfig::default();
     browser_config.proxy = proxy_config;
-    let mut browser = pardus_core::Browser::new(browser_config);
+    let mut browser = pardus_core::Browser::new(browser_config)?;
     browser.navigate(url).await?;
     if let Some(tab) = browser.active_tab() {
         println!("Navigated to: {}", tab.url);

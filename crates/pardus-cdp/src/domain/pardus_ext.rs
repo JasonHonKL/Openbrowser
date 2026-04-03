@@ -18,7 +18,7 @@ async fn get_page_data(ctx: &DomainContext, target_id: &str) -> Option<(String, 
     Some((html, url))
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for PardusDomain {
     fn domain_name(&self) -> &'static str {
         "Pardus"
@@ -45,7 +45,15 @@ impl CdpDomainHandler for PardusDomain {
             "semanticTree" => {
                 match get_page_data(ctx, target_id).await {
                     Some((html_str, url)) => {
-                        let page = pardus_core::Page::from_html(&html_str, &url);
+                        let frame_tree_json = ctx.get_frame_tree_json(target_id).await;
+                        let page = if let Some(ft_json) = frame_tree_json {
+                            match serde_json::from_str::<pardus_core::FrameTree>(&ft_json) {
+                                Ok(ft) => pardus_core::Page::from_html_with_frame_tree(&html_str, &url, ft),
+                                Err(_) => pardus_core::Page::from_html(&html_str, &url),
+                            }
+                        } else {
+                            pardus_core::Page::from_html(&html_str, &url)
+                        };
                         let tree = page.semantic_tree();
                         let result = serde_json::to_value(&tree).unwrap_or(serde_json::json!({
                             "error": "Failed to serialize semantic tree"
@@ -113,6 +121,29 @@ impl CdpDomainHandler for PardusDomain {
                         HandleResult::Success(serde_json::json!({
                             "actions": actions
                         }))
+                    }
+                    None => HandleResult::Error(CdpErrorResponse {
+                        id: 0,
+                        error: crate::error::CdpErrorBody {
+                            code: SERVER_ERROR,
+                            message: "No active page".to_string(),
+                        },
+                        session_id: None,
+                    }),
+                }
+            }
+            "getCoverage" => {
+                match get_page_data(ctx, target_id).await {
+                    Some((html_str, url)) => {
+                        let html = scraper::Html::parse_document(&html_str);
+                        let css_sources = pardus_debug::coverage::extract_inline_styles(&html);
+                        let log = ctx.app.network_log.lock().unwrap_or_else(|e| e.into_inner());
+                        let report = pardus_debug::coverage::CoverageReport::build(
+                            &url, &html, &css_sources, &log,
+                        );
+                        let result = serde_json::to_value(&report)
+                            .unwrap_or(serde_json::json!({"error": "serialization failed"}));
+                        HandleResult::Success(result)
                     }
                     None => HandleResult::Error(CdpErrorResponse {
                         id: 0,

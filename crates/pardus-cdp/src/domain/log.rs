@@ -6,7 +6,7 @@ use crate::protocol::target::CdpSession;
 
 pub struct LogDomain;
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for LogDomain {
     fn domain_name(&self) -> &'static str {
         "Log"

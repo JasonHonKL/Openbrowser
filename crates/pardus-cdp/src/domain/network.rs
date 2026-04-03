@@ -19,7 +19,7 @@ fn resolve_target_id(session: &CdpSession) -> &str {
     session.target_id.as_deref().unwrap_or("default")
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for NetworkDomain {
     fn domain_name(&self) -> &'static str {
         "Network"
@@ -144,6 +144,14 @@ impl CdpDomainHandler for NetworkDomain {
                     "body": "",
                     "base64Encoded": false,
                 }))
+            }
+            "getHAR" => {
+                let har = {
+                    let log = ctx.app.network_log.lock().unwrap_or_else(|e| e.into_inner());
+                    pardus_debug::har::HarFile::from_network_log(&log)
+                };
+                let har_value = serde_json::to_value(&har).unwrap_or(serde_json::json!({}));
+                HandleResult::Success(serde_json::json!({ "log": har_value.get("log").cloned().unwrap_or(serde_json::json!({})) }))
             }
             _ => method_not_found("Network", method),
         }

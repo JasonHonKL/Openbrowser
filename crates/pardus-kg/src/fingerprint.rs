@@ -106,6 +106,7 @@ fn role_str(role: &SemanticRole) -> String {
         SemanticRole::RowHeader => "rowheader".to_string(),
         SemanticRole::Image => "img".to_string(),
         SemanticRole::Dialog => "dialog".to_string(),
+        SemanticRole::IFrame => "iframe".to_string(),
         SemanticRole::Generic => "generic".to_string(),
         SemanticRole::StaticText => "text".to_string(),
         SemanticRole::Other(s) => s.clone(),

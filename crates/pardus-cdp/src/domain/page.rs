@@ -36,7 +36,7 @@ fn resolve_target_id(session: &CdpSession) -> &str {
     session.target_id.as_deref().unwrap_or("default")
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for PageDomain {
     fn domain_name(&self) -> &'static str {
         "Page"
@@ -158,9 +158,18 @@ impl CdpDomainHandler for PageDomain {
             "getFrameTree" => {
                 let target_id = resolve_target_id(session).to_string();
                 let targets = ctx.targets.lock().await;
-                let (frame_id, url, _title) = targets.get(&target_id)
+                let entry = targets.get(&target_id);
+                let (frame_id, url, _title) = entry
                     .map(|t| (target_id.clone(), t.url.clone(), t.title.clone().unwrap_or_default()))
                     .unwrap_or_else(|| ("main".to_string(), "about:blank".to_string(), String::new()));
+                let frame_tree_json = entry.and_then(|e| e.frame_tree_json.clone());
+
+                let child_frames = if let Some(json_str) = &frame_tree_json {
+                    parse_child_frames(json_str)
+                } else {
+                    Vec::new()
+                };
+
                 HandleResult::Success(serde_json::json!({
                     "frameTree": {
                         "frame": {
@@ -171,7 +180,7 @@ impl CdpDomainHandler for PageDomain {
                             "securityOrigin": "",
                             "unreachableUrl": Value::Null,
                         },
-                        "childFrames": [],
+                        "childFrames": child_frames,
                     }
                 }))
             }
@@ -195,11 +204,16 @@ impl CdpDomainHandler for PageDomain {
             }
             "getResourceTree" => {
                 let target_id = resolve_target_id(session).to_string();
-                let (url, _title) = {
-                    let targets = ctx.targets.lock().await;
-                    targets.get(&target_id)
-                        .map(|t| (t.url.clone(), t.title.clone().unwrap_or_default()))
-                        .unwrap_or_else(|| ("about:blank".to_string(), String::new()))
+                let targets = ctx.targets.lock().await;
+                let entry = targets.get(&target_id);
+                let (url, _title) = entry
+                    .map(|t| (t.url.clone(), t.title.clone().unwrap_or_default()))
+                    .unwrap_or_else(|| ("about:blank".to_string(), String::new()));
+                let frame_tree_json = entry.and_then(|e| e.frame_tree_json.clone());
+                let child_frames = if let Some(json_str) = &frame_tree_json {
+                    parse_child_frames(json_str)
+                } else {
+                    Vec::new()
                 };
                 HandleResult::Success(serde_json::json!({
                     "frameTree": {
@@ -211,7 +225,7 @@ impl CdpDomainHandler for PageDomain {
                             "securityOrigin": "",
                         },
                         "resources": [],
-                        "childFrames": [],
+                        "childFrames": child_frames,
                     }
                 }))
             }
@@ -233,14 +247,63 @@ impl CdpDomainHandler for PageDomain {
                 }))
             }
             "captureScreenshot" => {
-                HandleResult::Error(CdpErrorResponse {
-                    id: 0,
-                    error: CdpErrorBody {
-                        code: crate::error::SERVER_ERROR,
-                        message: "Screenshots not supported. PardusBrowser is a semantic-only browser (no rendering engine). Use Pardus.semanticTree() for an AI-friendly page representation.".to_string(),
-                    },
-                    session_id: None,
-                })
+                #[cfg(feature = "screenshot")]
+                {
+                    let target_id = resolve_target_id(session).to_string();
+                    let url = match ctx.get_url(&target_id).await {
+                        Some(u) => u,
+                        None => return server_error("No page loaded — navigate to a URL first"),
+                    };
+
+                    let format_str = params["format"].as_str().unwrap_or("png");
+                    let quality = params["quality"].as_u64().map(|q| q as u8);
+                    let has_clip = !params["clip"].is_null();
+                    let full_page = params["captureBeyondViewport"].as_bool()
+                        .unwrap_or(has_clip);
+
+                    let screenshot_format = match format_str {
+                        "jpeg" => {
+                            pardus_core::screenshot::ScreenshotFormat::Jpeg {
+                                quality: quality.unwrap_or(85),
+                            }
+                        }
+                        _ => pardus_core::screenshot::ScreenshotFormat::Png,
+                    };
+
+                    let opts = pardus_core::screenshot::ScreenshotOptions {
+                        viewport_width: 1280,
+                        viewport_height: 720,
+                        format: screenshot_format,
+                        full_page,
+                        timeout_ms: 10_000,
+                    };
+
+                    match ctx.screenshot_handle.capture_page(&url, &opts).await {
+                        Ok(bytes) => {
+                            use base64::Engine;
+                            let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                            HandleResult::Success(serde_json::json!({
+                                "data": encoded,
+                                "metadata": {
+                                    "pageWidth": opts.viewport_width,
+                                    "pageHeight": opts.viewport_height,
+                                }
+                            }))
+                        }
+                        Err(e) => server_error(format!("Screenshot capture failed: {}", e)),
+                    }
+                }
+                #[cfg(not(feature = "screenshot"))]
+                {
+                    HandleResult::Error(CdpErrorResponse {
+                        id: 0,
+                        error: CdpErrorBody {
+                            code: crate::error::SERVER_ERROR,
+                            message: "Screenshots not supported. PardusBrowser is a semantic-only browser (no rendering engine). Rebuild with --features screenshot to enable.".to_string(),
+                        },
+                        session_id: None,
+                    })
+                }
             }
             "printToPDF" => {
                 HandleResult::Error(CdpErrorResponse {
@@ -310,15 +373,24 @@ impl CdpDomainHandler for PageDomain {
             }
             "getFrameResourceTree" => {
                 let target_id = resolve_target_id(session).to_string();
+                let targets = ctx.targets.lock().await;
+                let entry = targets.get(&target_id);
+                let url = entry.map(|t| t.url.clone()).unwrap_or_default();
+                let frame_tree_json = entry.and_then(|e| e.frame_tree_json.clone());
+                let child_frames = if let Some(json_str) = &frame_tree_json {
+                    parse_child_frames(json_str)
+                } else {
+                    Vec::new()
+                };
                 HandleResult::Success(serde_json::json!({
                     "frameTree": {
                         "frame": {
                             "id": target_id,
-                            "url": ctx.get_url(&target_id).await.unwrap_or_default(),
+                            "url": url,
                             "mimeType": "text/html",
                         },
                         "resources": [],
-                        "childFrames": [],
+                        "childFrames": child_frames,
                     }
                 }))
             }
@@ -334,4 +406,46 @@ impl CdpDomainHandler for PageDomain {
             _ => method_not_found("Page", method),
         }
     }
+}
+
+fn frame_data_to_cdp(frame: &serde_json::Value) -> serde_json::Value {
+    let id = frame["id"].as_str().unwrap_or_default();
+    let url = frame["url"].as_str().unwrap_or_default();
+    let has_error = frame.get("load_error").and_then(|e| e.as_str()).map_or(false, |s| !s.is_empty());
+    let child_frames: Vec<Value> = frame.get("child_frames")
+        .and_then(|c| c.as_array())
+        .map(|arr| arr.iter().map(|f| frame_data_to_cdp(f)).collect())
+        .unwrap_or_default();
+
+    let mut obj = serde_json::json!({
+        "id": id,
+        "loaderId": id,
+        "url": url,
+        "mimeType": "text/html",
+        "securityOrigin": "",
+        "unreachableUrl": Value::Null,
+    });
+    if has_error {
+        obj["unreachableUrl"] = Value::String(url.to_string());
+    }
+    if !child_frames.is_empty() {
+        obj["childFrames"] = Value::Array(child_frames);
+    }
+    obj
+}
+
+fn parse_child_frames(frame_tree_json: &str) -> Vec<Value> {
+    let tree: Value = match serde_json::from_str(frame_tree_json) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let root = match tree.get("root") {
+        Some(r) => r,
+        None => return Vec::new(),
+    };
+    let child_frames = match root.get("child_frames").and_then(|c| c.as_array()) {
+        Some(arr) => arr,
+        None => return Vec::new(),
+    };
+    child_frames.iter().map(|f| frame_data_to_cdp(f)).collect()
 }

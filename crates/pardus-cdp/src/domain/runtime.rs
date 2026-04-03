@@ -20,7 +20,7 @@ fn _now_timestamp() -> f64 {
         * 1000.0
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl CdpDomainHandler for RuntimeDomain {
     fn domain_name(&self) -> &'static str {
         "Runtime"

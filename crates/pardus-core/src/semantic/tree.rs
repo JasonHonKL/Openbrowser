@@ -1,7 +1,10 @@
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt;
 use url::Url;
+
+use crate::frame::{FrameData, FrameTree};
 
 // ---------------------------------------------------------------------------
 // Semantic Tree
@@ -55,6 +58,7 @@ pub struct TreeStats {
     pub actions: usize,
     pub forms: usize,
     pub images: usize,
+    pub iframes: usize,
     pub total_nodes: usize,
 }
 
@@ -90,6 +94,7 @@ pub enum SemanticRole {
     RowHeader,
     Image,
     Dialog,
+    IFrame,
     Generic,
     StaticText,
     Other(String),
@@ -153,6 +158,7 @@ impl SemanticRole {
             Self::RowHeader => "rowheader",
             Self::Image => "img",
             Self::Dialog => "dialog",
+            Self::IFrame => "iframe",
             Self::Generic => "generic",
             Self::StaticText => "text",
             Self::Other(s) => s.as_str(),
@@ -179,7 +185,7 @@ impl SemanticRole {
 }
 
 impl SemanticTree {
-    /// Build a semantic tree from parsed HTML.
+    /// Build a semantic tree from parsed HTML (no iframe recursion).
     pub fn build(html: &Html, base_url: &str) -> Self {
         let mut stats = TreeStats::default();
         let mut builder = TreeBuilder {
@@ -187,6 +193,31 @@ impl SemanticTree {
             html,
             stats: &mut stats,
             next_element_id: 1,
+            iframe_map: &HashMap::new(),
+        };
+
+        let root = builder.build_from_html(html);
+        stats.total_nodes = count_nodes(&root);
+        Self { root, stats }
+    }
+
+    /// Build a semantic tree with iframe-aware recursive parsing.
+    ///
+    /// When a `<iframe>` or `<frame>` element is encountered, its child frame
+    /// content from the FrameTree is recursively walked into, and element IDs
+    /// continue with global flat numbering across all frames.
+    pub fn build_with_frames(html: &Html, base_url: &str, frame_tree: &FrameTree) -> Self {
+        let mut stats = TreeStats::default();
+
+        // Build a map: selector -> FrameData for iframe lookup
+        let iframe_map = build_iframe_selector_map(&frame_tree.root);
+
+        let mut builder = TreeBuilder {
+            base_url,
+            html,
+            stats: &mut stats,
+            next_element_id: 1,
+            iframe_map: &iframe_map,
         };
 
         let root = builder.build_from_html(html);
@@ -208,6 +239,8 @@ struct TreeBuilder<'a> {
     html: &'a Html,
     stats: &'a mut TreeStats,
     next_element_id: usize,
+    /// Map from CSS selector (of the <iframe> element in the parent) -> child FrameData.
+    iframe_map: &'a HashMap<String, &'a FrameData>,
 }
 
 impl<'a> TreeBuilder<'a> {
@@ -246,15 +279,21 @@ impl<'a> TreeBuilder<'a> {
         let tag_str = tag.as_str();
 
         // Skip metadata elements
-        if matches!(tag_str, "script" | "style" | "link" | "meta" | "noscript" | "head") {
+        if matches!(
+            tag_str,
+            "script" | "style" | "link" | "meta" | "noscript" | "head"
+        ) {
             return None;
         }
 
         // Skip hidden elements
-        if el.value().attr("hidden").is_some()
-            || el.value().attr("aria-hidden") == Some("true")
-        {
+        if el.value().attr("hidden").is_some() || el.value().attr("aria-hidden") == Some("true") {
             return None;
+        }
+
+        // Handle iframe/frame elements
+        if tag_str == "iframe" || tag_str == "frame" {
+            return self.walk_iframe(el, tag_str);
         }
 
         // Compute role
@@ -349,6 +388,67 @@ impl<'a> TreeBuilder<'a> {
         })
     }
 
+    /// Handle iframe/frame elements: look up child frame content and recurse.
+    fn walk_iframe(&mut self, el: &ElementRef, tag_str: &str) -> Option<SemanticNode> {
+        let selector = build_unique_selector(el, self.html);
+
+        // Try to find the child frame in our iframe map
+        let child_frame = self.iframe_map.get(&selector).copied();
+
+        let src = el.value().attr("src").map(|s| self.resolve_url(s));
+        let title = el
+            .value()
+            .attr("title")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let name = el
+            .value()
+            .attr("name")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let frame_name = title.or(name).or(src.clone()).unwrap_or_else(|| {
+            child_frame
+                .map(|f| f.url.clone())
+                .unwrap_or_else(|| "iframe".to_string())
+        });
+
+        self.stats.iframes += 1;
+
+        // Walk into child frame content if available
+        let mut child_nodes = Vec::new();
+        if let Some(frame_data) = child_frame {
+            if let Some(frame_html) = frame_data.parsed_html() {
+                let frame_base_url = &frame_data.url;
+                let _ = frame_base_url;
+                let body_selector = Selector::parse("body").unwrap();
+                if let Some(body_el) = frame_html.select(&body_selector).next() {
+                    for child_node in body_el.children() {
+                        if let Some(child_el) = ElementRef::wrap(child_node) {
+                            if let Some(child) = self.walk_element(&child_el) {
+                                child_nodes.push(child);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(SemanticNode {
+            role: SemanticRole::IFrame,
+            name: Some(frame_name),
+            tag: tag_str.to_string(),
+            is_interactive: false,
+            is_disabled: false,
+            href: src,
+            action: None,
+            element_id: None,
+            selector: Some(selector),
+            input_type: None,
+            children: child_nodes,
+        })
+    }
+
     fn compute_name(&self, el: &ElementRef) -> Option<String> {
         // aria-label
         if let Some(label) = el.value().attr("aria-label") {
@@ -388,7 +488,10 @@ impl<'a> TreeBuilder<'a> {
 
         // text content for buttons, links, headings
         let tag = el.value().name();
-        if matches!(tag, "a" | "button" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "summary") {
+        if matches!(
+            tag,
+            "a" | "button" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "summary"
+        ) {
             let text = el.text().collect::<String>().trim().to_string();
             if !text.is_empty() {
                 return Some(text);
@@ -464,13 +567,11 @@ impl<'a> TreeBuilder<'a> {
 
             "a" => SemanticRole::Link,
             "button" => SemanticRole::Button,
-            "input" => {
-                match el.value().attr("type").unwrap_or("text") {
-                    "checkbox" => SemanticRole::Checkbox,
-                    "radio" => SemanticRole::Radio,
-                    _ => SemanticRole::TextBox,
-                }
-            }
+            "input" => match el.value().attr("type").unwrap_or("text") {
+                "checkbox" => SemanticRole::Checkbox,
+                "radio" => SemanticRole::Radio,
+                _ => SemanticRole::TextBox,
+            },
             "select" => SemanticRole::Combobox,
             "textarea" => SemanticRole::TextBox,
             "img" => SemanticRole::Image,
@@ -485,7 +586,10 @@ impl<'a> TreeBuilder<'a> {
 
     fn check_interactive(&self, tag: &str, el: &ElementRef) -> bool {
         // Native interactive
-        if matches!(tag, "a" | "button" | "input" | "select" | "textarea" | "details") {
+        if matches!(
+            tag,
+            "a" | "button" | "input" | "select" | "textarea" | "details"
+        ) {
             return !(tag == "a" && el.value().attr("href").is_none());
         }
 
@@ -493,9 +597,16 @@ impl<'a> TreeBuilder<'a> {
         if let Some(role) = el.value().attr("role") {
             if matches!(
                 role,
-                "button" | "link" | "textbox" | "checkbox"
-                    | "radio" | "combobox" | "switch" | "tab"
-                    | "menuitem" | "option"
+                "button"
+                    | "link"
+                    | "textbox"
+                    | "checkbox"
+                    | "radio"
+                    | "combobox"
+                    | "switch"
+                    | "tab"
+                    | "menuitem"
+                    | "option"
             ) {
                 return true;
             }
@@ -577,6 +688,7 @@ fn parse_role_str(s: &str) -> SemanticRole {
         "table" => SemanticRole::Table,
         "img" => SemanticRole::Image,
         "dialog" => SemanticRole::Dialog,
+        "iframe" => SemanticRole::IFrame,
         _ => SemanticRole::Other(s.to_string()),
     }
 }
@@ -643,7 +755,10 @@ fn build_unique_selector(el: &ElementRef, html: &Html) -> String {
 }
 
 fn css_escape_id(id: &str) -> String {
-    if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         id.to_string()
     } else {
         id.chars()
@@ -661,8 +776,7 @@ fn css_escape_id(id: &str) -> String {
 fn css_escape_attr(s: &str) -> String {
     // For attribute values, we don't need to escape # since we're inside quotes
     // We just need to escape the quote character and backslash
-    s.replace('\\', "\\\\")
-     .replace('"', "\\\"")
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn build_structural_selector(el: &ElementRef) -> String {
@@ -710,4 +824,36 @@ fn count_element_position(el: &ElementRef) -> usize {
         }
     }
     1
+}
+
+// ---------------------------------------------------------------------------
+// IFrame Selector Map
+// ---------------------------------------------------------------------------
+
+/// Build a map from CSS selectors (of <iframe> elements in a parent frame) to child FrameData.
+///
+/// This is used by TreeBuilder to look up child frame content when it encounters
+/// an <iframe> element in the parent HTML. The selector must match how
+/// `build_unique_selector` would identify the <iframe> element.
+fn build_iframe_selector_map(root_frame: &FrameData) -> HashMap<String, &FrameData> {
+    let mut map = HashMap::new();
+    populate_iframe_map(root_frame, &mut map);
+    map
+}
+
+fn populate_iframe_map<'a>(frame: &'a FrameData, map: &mut HashMap<String, &'a FrameData>) {
+    if let Some(html) = frame.parsed_html() {
+        let iframe_selector = Selector::parse("iframe, frame").unwrap();
+        let mut child_idx = 0;
+
+        for el in html.select(&iframe_selector) {
+            let selector = build_unique_selector(&el, &html);
+            map.insert(selector, &frame.child_frames[child_idx]);
+            child_idx += 1;
+        }
+    }
+
+    for child_frame in &frame.child_frames {
+        populate_iframe_map(child_frame, map);
+    }
 }

@@ -14,7 +14,7 @@ pub async fn run_with_config(
     browser_config: BrowserConfig,
 ) -> Result<()> {
     let start = Instant::now();
-    let mut browser = pardus_core::Browser::new(browser_config);
+    let mut browser = pardus_core::Browser::new(browser_config)?;
 
     // Navigate first
     if js {

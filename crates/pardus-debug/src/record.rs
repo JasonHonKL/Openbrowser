@@ -62,6 +62,14 @@ pub struct NetworkRecord {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_cache: Option<bool>,
+
+    /// ISO 8601 timestamp of when the request was initiated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
+
+    /// HTTP protocol version (e.g., "HTTP/1.1", "HTTP/2").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub http_version: Option<String>,
 }
 
 impl NetworkRecord {
@@ -90,6 +98,8 @@ impl NetworkRecord {
             response_headers: Vec::new(),
             error: None,
             from_cache: None,
+            started_at: None,
+            http_version: None,
         }
     }
 
@@ -117,6 +127,8 @@ impl NetworkRecord {
             response_headers: Vec::new(),
             error: None,
             from_cache: None,
+            started_at: None,
+            http_version: None,
         }
     }
 }

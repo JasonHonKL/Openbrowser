@@ -8,7 +8,7 @@ use crate::OutputFormatArg;
 pub async fn run_with_config(js: bool, format: OutputFormatArg, wait_ms: u32, proxy_config: ProxyConfig) -> Result<()> {
     let mut browser_config = BrowserConfig::default();
     browser_config.proxy = proxy_config;
-    let mut browser = Browser::new(browser_config);
+    let mut browser = Browser::new(browser_config)?;
     let mut format = format;
     let mut js_enabled = js;
     let mut wait_ms = wait_ms;

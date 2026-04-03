@@ -87,6 +87,14 @@ enum Commands {
         /// Disable automatic loading of proxy settings from environment variables
         #[arg(long)]
         no_proxy_env: bool,
+
+        /// Export network requests as HAR 1.2 JSON to the given file path
+        #[arg(long)]
+        har: Option<PathBuf>,
+
+        /// Generate CSS/JS coverage report and write JSON to the given file path
+        #[arg(long)]
+        coverage: Option<PathBuf>,
     },
 
     /// Interact with a page (click, type, submit, wait, scroll)
@@ -256,6 +264,7 @@ enum Commands {
 
     /// Map a site's functional structure into a Knowledge Graph
     Map {
+
         /// Root URL to start mapping from
         url: String,
 
@@ -310,6 +319,45 @@ enum Commands {
         /// Disable automatic loading of proxy settings from environment variables
         #[arg(long)]
         no_proxy_env: bool,
+    },
+
+    /// Capture a screenshot of a web page
+    #[cfg(feature = "screenshot")]
+    Screenshot {
+        /// URL to capture
+        url: String,
+
+        /// Output file path
+        #[arg(short, long, default_value = "screenshot.png")]
+        output: PathBuf,
+
+        /// Capture a specific element by CSS selector
+        #[arg(long)]
+        element: Option<String>,
+
+        /// Capture the full page (scrolls to capture everything)
+        #[arg(long)]
+        full_page: bool,
+
+        /// Viewport size (e.g., "1920x1080")
+        #[arg(long, default_value = "1280x720")]
+        viewport: String,
+
+        /// Output format (png, jpeg)
+        #[arg(long, default_value = "png")]
+        format: String,
+
+        /// JPEG quality (1-100, default: 85)
+        #[arg(long)]
+        quality: Option<u8>,
+
+        /// Path to Chrome/Chromium binary
+        #[arg(long)]
+        chrome_path: Option<PathBuf>,
+
+        /// Navigation timeout in milliseconds
+        #[arg(long, default_value = "10000")]
+        timeout_ms: u64,
     },
 }
 
@@ -422,6 +470,8 @@ async fn main() -> Result<()> {
             proxy_https,
             no_proxy,
             no_proxy_env,
+            har,
+            coverage,
         } => {
             if verbose {
                 tracing_subscriber::fmt()
@@ -471,7 +521,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            commands::navigate::run_with_config(&url, format, interactive_only, with_nav, js, wait_ms, network_log, browser_config,
+            commands::navigate::run_with_config(&url, format, interactive_only, with_nav, js, wait_ms, network_log, har, coverage, browser_config,
             ).await?;
         }
         Commands::Interact {
@@ -589,7 +639,7 @@ async fn main() -> Result<()> {
                 TabAction::List => {
                     let mut browser_config = pardus_core::BrowserConfig::default();
                     browser_config.proxy = proxy_config;
-                    let browser = pardus_core::Browser::new(browser_config);
+                    let browser = pardus_core::Browser::new(browser_config)?;
                     commands::tab::list(&browser, OutputFormatArg::Md).await?;
                 }
                 TabAction::Open { url, js } => {
@@ -599,7 +649,7 @@ async fn main() -> Result<()> {
                 TabAction::Info => {
                     let mut browser_config = pardus_core::BrowserConfig::default();
                     browser_config.proxy = proxy_config;
-                    let browser = pardus_core::Browser::new(browser_config);
+                    let browser = pardus_core::Browser::new(browser_config)?;
                     commands::tab::info(&browser, OutputFormatArg::Md)?;
                 }
                 TabAction::Navigate { url } => {
@@ -667,6 +717,30 @@ async fn main() -> Result<()> {
 
             commands::map::run_with_config(
                 &url, &output, depth, max_pages, delay, skip_verify, pagination, hash_nav, verbose, proxy_config,
+            ).await?;
+        }
+        #[cfg(feature = "screenshot")]
+        Commands::Screenshot {
+            url,
+            output,
+            element,
+            full_page,
+            viewport,
+            format,
+            quality,
+            chrome_path,
+            timeout_ms,
+        } => {
+            commands::screenshot::run(
+                &url,
+                &output,
+                element.as_deref(),
+                full_page,
+                &viewport,
+                &format,
+                quality,
+                chrome_path.as_ref(),
+                timeout_ms,
             ).await?;
         }
     }

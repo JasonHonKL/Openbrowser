@@ -77,45 +77,52 @@ impl CdpServer {
         let conn_semaphore = Arc::new(Semaphore::new(self.max_connections));
         let mut shutdown_rx = self.shutdown.subscribe();
 
-        loop {
-            tokio::select! {
-                accept_result = listener.accept() => {
-                    let (stream, peer_addr) = accept_result?;
+        let local = tokio::task::LocalSet::new();
 
-                    let permit = match conn_semaphore.clone().try_acquire_owned() {
-                        Ok(permit) => permit,
-                        Err(_) => {
-                            tracing::warn!(
-                                "Connection from {} rejected: max connections ({}) reached",
-                                peer_addr, self.max_connections
-                            );
-                            continue;
-                        }
-                    };
+        let result: anyhow::Result<()> = local.run_until(async move {
+            loop {
+                tokio::select! {
+                    accept_result = listener.accept() => {
+                        let (stream, peer_addr) = match accept_result {
+                            Ok(v) => v,
+                            Err(e) => break Err(e.into()),
+                        };
 
-                    tracing::info!("New connection from {}", peer_addr);
+                        let permit = match conn_semaphore.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                tracing::warn!(
+                                    "Connection from {} rejected: max connections ({}) reached",
+                                    peer_addr, self.max_connections
+                                );
+                                continue;
+                            }
+                        };
 
-                    let router = router.clone();
-                    let event_bus = event_bus.clone();
-                    let app = self.app.clone();
-                    let timeout = self.timeout;
+                        tracing::info!("New connection from {}", peer_addr);
 
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_connection(stream, peer_addr, router, event_bus, app, timeout).await {
-                            tracing::error!("Connection error from {}: {}", peer_addr, e);
-                        }
-                        drop(permit);
-                        tracing::info!("Connection from {} closed", peer_addr);
-                    });
-                }
-                _ = shutdown_rx.changed() => {
-                    tracing::info!("CDP server shutting down");
-                    break;
+                        let router = router.clone();
+                        let event_bus = event_bus.clone();
+                        let app = self.app.clone();
+                        let timeout = self.timeout;
+
+                        tokio::task::spawn_local(async move {
+                            if let Err(e) = handle_connection(stream, peer_addr, router, event_bus, app, timeout).await {
+                                tracing::error!("Connection error from {}: {}", peer_addr, e);
+                            }
+                            drop(permit);
+                            tracing::info!("Connection from {} closed", peer_addr);
+                        });
+                    }
+                    _ = shutdown_rx.changed() => {
+                        tracing::info!("CDP server shutting down");
+                        break Ok(());
+                    }
                 }
             }
-        }
+        }).await;
 
-        Ok(())
+        result
     }
 }
 

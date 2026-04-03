@@ -18,6 +18,8 @@ pub struct TargetEntry {
     pub html: Option<String>,
     pub title: Option<String>,
     pub js_enabled: bool,
+    /// Serialized `FrameTree` JSON. Populated when iframe parsing is enabled.
+    pub frame_tree_json: Option<String>,
 }
 
 /// Shared state available to all domain handlers. All fields are Send+Sync.
@@ -31,6 +33,9 @@ pub struct DomainContext {
     pub event_bus: Arc<EventBus>,
     /// Node map for this session (backendNodeId <-> selector).
     pub node_map: Arc<Mutex<NodeMap>>,
+    /// Screenshot handle for captureScreenshot support (feature-gated).
+    #[cfg(feature = "screenshot")]
+    pub screenshot_handle: pardus_core::screenshot::ScreenshotHandle,
 }
 
 impl DomainContext {
@@ -41,11 +46,22 @@ impl DomainContext {
         event_bus: Arc<EventBus>,
         node_map: Arc<Mutex<NodeMap>>,
     ) -> Self {
+        #[cfg(feature = "screenshot")]
+        let screenshot_handle = {
+            let config = app.config.read();
+            pardus_core::screenshot::ScreenshotHandle::new(
+                config.screenshot_chrome_path.clone(),
+                config.viewport_width,
+                config.viewport_height,
+            )
+        };
         Self {
             app,
             targets,
             event_bus,
             node_map,
+            #[cfg(feature = "screenshot")]
+            screenshot_handle,
         }
     }
 
@@ -56,6 +72,7 @@ impl DomainContext {
     pub fn create_browser(&self) -> pardus_core::Browser {
         let config = self.app.config_snapshot();
         pardus_core::Browser::new(config)
+            .expect("failed to create Browser")
     }
 }
 
@@ -86,16 +103,19 @@ impl DomainContext {
     /// !Send types (scraper::Html in Page) that cannot be held across await
     /// points in CDP handlers which must be Send.
     pub async fn navigate(&self, target_id: &str, url: &str) -> anyhow::Result<()> {
-        let (final_url, html_str, title) = {
-            let page = pardus_core::Page::from_url(&self.app, url).await?;
-            (page.url.clone(), page.html.html().to_string(), page.title())
-        };
+        let page = pardus_core::Page::from_url(&self.app, url).await?;
+        let frame_tree_json = page.frame_tree.as_ref()
+            .and_then(|ft| serde_json::to_string(ft).ok());
+        let final_url = page.url.clone();
+        let html_str = page.html.html().to_string();
+        let title = page.title();
         let mut targets = self.targets.lock().await;
         targets.insert(target_id.to_string(), TargetEntry {
             url: final_url,
             html: Some(html_str),
             title,
             js_enabled: false,
+            frame_tree_json,
         });
         Ok(())
     }
@@ -119,7 +139,13 @@ impl DomainContext {
             html: Some(html),
             title,
             js_enabled: false,
+            frame_tree_json: None,
         });
+    }
+
+    pub async fn get_frame_tree_json(&self, target_id: &str) -> Option<String> {
+        let targets = self.targets.lock().await;
+        targets.get(target_id).and_then(|e| e.frame_tree_json.clone())
     }
 }
 
@@ -142,7 +168,7 @@ impl HandleResult {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 pub trait CdpDomainHandler: Send + Sync {
     fn domain_name(&self) -> &'static str;
 

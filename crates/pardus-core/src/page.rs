@@ -5,6 +5,7 @@ use std::time::Instant;
 use url::Url;
 
 use crate::app::App;
+use crate::frame::{FrameTree, FrameId};
 use crate::push::EarlyScanner;
 use crate::resource::ResourceFetcher;
 use crate::semantic::tree::{SemanticTree, SemanticRole, SemanticNode};
@@ -34,15 +35,29 @@ pub struct Page {
     pub base_url: String,
     /// CSP policy parsed from response headers (when CSP enforcement is enabled).
     pub csp: Option<crate::csp::CspPolicySet>,
+    /// Frame tree with recursively parsed iframe/frame content.
+    /// `None` if iframe parsing is disabled or not applicable.
+    pub frame_tree: Option<FrameTree>,
+    /// Pre-built semantic tree for non-HTML content (e.g., PDFs).
+    /// When `Some`, `semantic_tree()` returns this instead of parsing HTML.
+    pub cached_tree: Option<SemanticTree>,
 }
 
 impl Page {
-    async fn fetch_html(app: &Arc<App>, url: &str) -> anyhow::Result<(String, u16, String, Option<String>, Option<crate::csp::CspPolicySet>)> {
+    #[must_use = "ignoring Result may silently swallow navigation errors"]
+    pub async fn from_url(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
+        Self::fetch_and_create(app, url).await
+    }
+
+    /// Fetch a URL and create a Page, routing to PDF extraction when appropriate.
+    pub async fn fetch_and_create(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
         app.validate_url(url)?;
 
+        let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let start = Instant::now();
 
         let response = app.http_client.get(url).send().await?;
+        let http_version = format_http_version(response.version());
         let status = response.status().as_u16();
         let final_url = response.url().to_string();
         let content_type = response
@@ -57,10 +72,39 @@ impl Page {
             .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
             .collect();
 
+        let is_pdf = content_type.as_ref().map_or(false, |ct| {
+            ct.split(';').next().unwrap_or(ct).trim().to_lowercase() == "application/pdf"
+        });
+
+        if is_pdf {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to download PDF: {}", e))?;
+            let body_size = bytes.len();
+
+            let config = app.config.read();
+            if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
+                anyhow::bail!(
+                    "PDF size ({} bytes) exceeds sandbox limit ({} bytes)",
+                    body_size,
+                    config.sandbox.max_page_size
+                );
+            }
+            drop(config);
+
+            let timing_ms = start.elapsed().as_millis();
+            record_main_request(
+                app, url, &final_url, status, &content_type,
+                body_size, timing_ms, &resp_headers, started_at, http_version,
+            );
+
+            return Self::from_pdf_bytes(&bytes, &final_url, status, content_type);
+        }
+
         let body = response.text().await?;
         let body_size = body.len();
 
-        // Sandbox: check max page size
         let config = app.config.read();
         if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
             anyhow::bail!(
@@ -71,29 +115,34 @@ impl Page {
         }
 
         let timing_ms = start.elapsed().as_millis();
-
-        record_main_request(app, url, &final_url, status, &content_type, body_size, timing_ms, &resp_headers);
+        record_main_request(
+            app, url, &final_url, status, &content_type,
+            body_size, timing_ms, &resp_headers, started_at, http_version,
+        );
 
         validate_content_type_pub(content_type.as_deref(), &final_url)?;
 
-        // Sandbox: disable push if sandbox says so
         let push_enabled = config.push.enable_push && !config.sandbox.disable_push;
-
-        // CSP: parse policy from response headers if enforcement is enabled
         let csp_policy = config.csp.parse_policy(&resp_headers);
         drop(config);
 
         spawn_push_fetches(&app.http_client, &body, &final_url, push_enabled);
 
-        Ok((body, status, final_url, content_type, csp_policy))
-    }
-
-    #[must_use = "ignoring Result may silently swallow navigation errors"]
-    pub async fn from_url(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
-        let (body, status, final_url, content_type, csp) = Self::fetch_html(app, url).await?;
-
         let html = Html::parse_document(&body);
-        let base_url = Self::extract_base_url(&html, &final_url, csp.as_ref());
+        let base_url = Self::extract_base_url(&html, &final_url, csp_policy.as_ref());
+
+        let config = app.config.read();
+        let frame_tree = if config.parse_iframes {
+            let max_depth = config.max_iframe_depth;
+            drop(config);
+            Some(
+                FrameTree::build(html.clone(), &final_url, &base_url, &app.http_client, max_depth)
+                    .await,
+            )
+        } else {
+            drop(config);
+            None
+        };
 
         Ok(Self {
             url: final_url,
@@ -101,29 +150,70 @@ impl Page {
             content_type,
             html,
             base_url,
-            csp,
+            csp: csp_policy,
+            frame_tree,
+            cached_tree: None,
+        })
+    }
+
+    /// Create a Page from raw PDF bytes.
+    pub fn from_pdf_bytes(
+        bytes: &[u8],
+        url: &str,
+        status: u16,
+        content_type: Option<String>,
+    ) -> anyhow::Result<Self> {
+        let (tree, _title) = crate::pdf::extract_pdf_tree(bytes)?;
+        let html = Html::parse_document("<html><body></body></html>");
+
+        Ok(Self {
+            url: url.to_string(),
+            status,
+            content_type,
+            html,
+            base_url: url.to_string(),
+            csp: None,
+            frame_tree: None,
+            cached_tree: Some(tree),
         })
     }
 
     #[must_use = "ignoring Result may silently swallow navigation errors"]
     #[cfg(feature = "js")]
     pub async fn from_url_with_js(app: &Arc<App>, url: &str, wait_ms: u32) -> anyhow::Result<Self> {
-        let (body, status, final_url, content_type, csp) = Self::fetch_html(app, url).await?;
+        let mut page = Self::fetch_and_create(app, url).await?;
 
-        let base_url = Self::extract_base_url(&Html::parse_document(&body), &final_url, csp.as_ref());
-        let final_body = crate::js::execute_js(&body, &base_url, wait_ms, Some(&app.config.read().sandbox)).await?;
+        if page.cached_tree.is_some() {
+            return Ok(page);
+        }
+
+        let html_str = page.html.html();
+        let base_url = page.base_url.clone();
+        let sandbox = &app.config.read().sandbox;
+        let final_body =
+            crate::js::execute_js(&html_str, &base_url, wait_ms, Some(sandbox)).await?;
 
         let html = Html::parse_document(&final_body);
-        let base_url = Self::extract_base_url(&html, &final_url, csp.as_ref());
+        let base_url = Self::extract_base_url(&html, &page.url, page.csp.as_ref());
 
-        Ok(Self {
-            url: final_url,
-            status,
-            content_type,
-            html,
-            base_url,
-            csp,
-        })
+        let config = app.config.read();
+        let frame_tree = if config.parse_iframes {
+            let max_depth = config.max_iframe_depth;
+            drop(config);
+            Some(
+                FrameTree::build(html.clone(), &page.url, &base_url, &app.http_client, max_depth)
+                    .await,
+            )
+        } else {
+            drop(config);
+            None
+        };
+
+        page.html = html;
+        page.base_url = base_url;
+        page.frame_tree = frame_tree;
+
+        Ok(page)
     }
 
     /// Returns an error indicating JS support is not compiled in.
@@ -142,10 +232,54 @@ impl Page {
             html,
             base_url,
             csp: None,
+            frame_tree: None,
+            cached_tree: None,
+        }
+    }
+
+    /// Create a Page from HTML string with an already-built frame tree.
+    pub fn from_html_with_frame_tree(html_str: &str, url: &str, frame_tree: FrameTree) -> Self {
+        let html = Html::parse_document(html_str);
+        let base_url = Self::extract_base_url(&html, url, None);
+        Self {
+            url: url.to_string(),
+            status: 200,
+            content_type: Some("text/html".to_string()),
+            html,
+            base_url,
+            csp: None,
+            frame_tree: Some(frame_tree),
+            cached_tree: None,
+        }
+    }
+
+    /// Create a Page from HTML string with iframe parsing using the given HTTP client.
+    pub async fn from_html_with_frames(
+        html_str: &str,
+        url: &str,
+        http_client: &reqwest::Client,
+        max_depth: usize,
+    ) -> Self {
+        let html = Html::parse_document(html_str);
+        let base_url = Self::extract_base_url(&html, url, None);
+        let frame_tree = FrameTree::build(html.clone(), url, &base_url, http_client, max_depth).await;
+        Self {
+            url: url.to_string(),
+            status: 200,
+            content_type: Some("text/html".to_string()),
+            html,
+            base_url,
+            csp: None,
+            frame_tree: Some(frame_tree),
+            cached_tree: None,
         }
     }
 
     pub fn title(&self) -> Option<String> {
+        if let Some(ref tree) = self.cached_tree {
+            return tree.root.name.clone();
+        }
+
         let selector = Selector::parse("title").ok()?;
         self.html
             .select(&selector)
@@ -218,7 +352,60 @@ impl Page {
     }
 
     pub fn semantic_tree(&self) -> SemanticTree {
-        SemanticTree::build(&self.html, &self.base_url)
+        if let Some(ref tree) = self.cached_tree {
+            return tree.clone();
+        }
+        if let Some(ref frame_tree) = self.frame_tree {
+            SemanticTree::build_with_frames(&self.html, &self.base_url, frame_tree)
+        } else {
+            SemanticTree::build(&self.html, &self.base_url)
+        }
+    }
+
+    /// Get the frame tree for this page (if iframe parsing was enabled).
+    pub fn frame_tree(&self) -> Option<&FrameTree> {
+        self.frame_tree.as_ref()
+    }
+
+    /// Find an element in a specific frame by CSS selector.
+    pub fn query_in_frame(&self, frame_id: &FrameId, selector: &str) -> Option<ElementHandle> {
+        let tree = self.frame_tree.as_ref()?;
+        let frame = tree.find_frame(frame_id)?;
+        let html = frame.parsed_html()?;
+        let sel = Selector::parse(selector).ok()?;
+        let el = html.select(&sel).next()?;
+        Some(element_to_handle(&el, &html))
+    }
+
+    /// Find all elements in a specific frame matching a CSS selector.
+    pub fn query_all_in_frame(&self, frame_id: &FrameId, selector: &str) -> Vec<ElementHandle> {
+        let tree = match &self.frame_tree {
+            Some(t) => t,
+            None => return Vec::new(),
+        };
+        let frame = match tree.find_frame(frame_id) {
+            Some(f) => f,
+            None => return Vec::new(),
+        };
+        let html = match frame.parsed_html() {
+            Some(h) => h,
+            None => return Vec::new(),
+        };
+        let sel = match Selector::parse(selector) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let results: Vec<ElementHandle> = html.select(&sel)
+            .map(|el| element_to_handle(&el, &html))
+            .collect();
+        results
+    }
+
+    /// Get the parsed HTML of a specific frame.
+    pub fn frame_parsed_html(&self, frame_id: &FrameId) -> Option<Html> {
+        let tree = self.frame_tree.as_ref()?;
+        let frame = tree.find_frame(frame_id)?;
+        frame.parsed_html()
     }
 
     /// Create a serializable snapshot of this page's state.
@@ -234,6 +421,8 @@ impl Page {
 
     /// Create a shallow clone by re-parsing the HTML source.
     /// Needed because `scraper::Html` is not `Clone`.
+    /// Note: frame_tree is lost during shallow clone since child frames
+    /// would need to be re-fetched.
     pub fn clone_shallow(&self) -> Self {
         Self {
             url: self.url.clone(),
@@ -242,6 +431,8 @@ impl Page {
             html: Html::parse_document(&self.html.html()),
             base_url: self.base_url.clone(),
             csp: self.csp.clone(),
+            frame_tree: None,
+            cached_tree: self.cached_tree.clone(),
         }
     }
 
@@ -373,6 +564,8 @@ fn record_main_request(
     body_size: usize,
     timing_ms: u128,
     response_headers: &[(String, String)],
+    started_at: String,
+    http_version: String,
 ) {
     let mut record = NetworkRecord::fetched(
         1,
@@ -388,6 +581,8 @@ fn record_main_request(
     record.body_size = Some(body_size);
     record.timing_ms = Some(timing_ms);
     record.response_headers = response_headers.to_vec();
+    record.started_at = Some(started_at);
+    record.http_version = Some(http_version);
 
     if original_url != final_url {
         record.redirect_url = Some(final_url.to_string());
@@ -414,6 +609,17 @@ fn http_status_text(status: u16) -> String {
         502 => "Bad Gateway",
         503 => "Service Unavailable",
         _ => "",
+    }.to_string()
+}
+
+fn format_http_version(version: http::Version) -> String {
+    match version {
+        http::Version::HTTP_09 => "HTTP/0.9",
+        http::Version::HTTP_10 => "HTTP/1.0",
+        http::Version::HTTP_11 => "HTTP/1.1",
+        http::Version::HTTP_2 => "HTTP/2",
+        http::Version::HTTP_3 => "HTTP/3",
+        _ => "unknown",
     }.to_string()
 }
 
