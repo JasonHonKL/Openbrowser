@@ -372,6 +372,7 @@ fn print_tree(browser: &Browser, format: &OutputFormatArg) {
                 &tree,
                 None,
                 None,
+                page.redirect_chain.as_ref(),
             )
             .unwrap_or_default();
             println!("{}", json);
@@ -415,6 +416,7 @@ fn print_interaction_result(
                         &tree,
                         None,
                         None,
+                        new_page.redirect_chain.as_ref(),
                     )
                     .unwrap_or_default();
                     println!("{}", json);
@@ -467,6 +469,7 @@ fn print_interaction_result(
                         &tree,
                         None,
                         None,
+                        new_page.redirect_chain.as_ref(),
                     )
                     .unwrap_or_default();
                     println!("{}", json);

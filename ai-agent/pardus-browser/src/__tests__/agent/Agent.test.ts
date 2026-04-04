@@ -59,7 +59,7 @@ describe('Agent', () => {
 
     it('should have default tool configuration', () => {
       const config = agent.getToolConfig();
-      assert.strictEqual(config?.parallel, false);
+      assert.strictEqual(config?.parallel, true);
       assert.strictEqual(config?.continueOnError, true);
       assert.strictEqual(config?.defaultRetryConfig, undefined);
     });

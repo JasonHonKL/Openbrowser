@@ -17,13 +17,12 @@ pub struct DiscoveredTransition {
 /// Discover all link-click transitions from a navigation graph.
 pub fn discover_link_transitions(
     nav_graph: &NavigationGraph,
-    root_origin: &str,
+    _root_origin: &str,
     _parent_id: &ViewStateId,
 ) -> Vec<DiscoveredTransition> {
     nav_graph
         .internal_links
         .iter()
-        .filter(|route| is_same_origin(&route.url, root_origin))
         .map(|route| {
             let selector = format!("a[href=\"{}\"]", route.url);
             DiscoveredTransition {
@@ -40,10 +39,7 @@ pub fn discover_link_transitions(
 
 /// Discover hash navigation transitions from page HTML.
 /// NavigationGraph skips href="#" links, so we need our own selector.
-pub fn discover_hash_transitions(
-    html: &Html,
-    page_url: &str,
-) -> Vec<DiscoveredTransition> {
+pub fn discover_hash_transitions(html: &Html, page_url: &str) -> Vec<DiscoveredTransition> {
     static HASH_LINK: Lazy<Selector> =
         Lazy::new(|| Selector::parse("a[href^='#']").expect("valid selector"));
 
@@ -60,7 +56,11 @@ pub fn discover_hash_transitions(
         let label: String = el.text().collect::<Vec<_>>().join(" ").trim().to_string();
         // For hash nav, the target URL is the same page with the fragment
         let target_url = if page_url.contains('#') {
-            format!("{}#{}", page_url.split('#').next().unwrap_or(page_url), fragment)
+            format!(
+                "{}#{}",
+                page_url.split('#').next().unwrap_or(page_url),
+                fragment
+            )
         } else {
             format!("{}#{}", page_url, fragment)
         };
@@ -86,7 +86,11 @@ pub fn discover_pagination_transitions(page_url: &str) -> Vec<DiscoveredTransiti
     };
 
     // Strategy 1: ?page=N
-    if let Some(page_str) = url.query_pairs().find(|(k, _)| k == "page").map(|(_, v)| v.to_string()) {
+    if let Some(page_str) = url
+        .query_pairs()
+        .find(|(k, _)| k == "page")
+        .map(|(_, v)| v.to_string())
+    {
         if let Ok(page_num) = page_str.parse::<u32>() {
             if page_num > 0 {
                 let next_page = page_num + 1;
@@ -103,7 +107,11 @@ pub fn discover_pagination_transitions(page_url: &str) -> Vec<DiscoveredTransiti
     }
 
     // Strategy 2: ?offset=N
-    if let Some(offset_str) = url.query_pairs().find(|(k, _)| k == "offset").map(|(_, v)| v.to_string()) {
+    if let Some(offset_str) = url
+        .query_pairs()
+        .find(|(k, _)| k == "offset")
+        .map(|(_, v)| v.to_string())
+    {
         if let Ok(offset) = offset_str.parse::<u32>() {
             let page_size = detect_page_size(&url).unwrap_or(20);
             let next_offset = offset + page_size;
@@ -119,7 +127,11 @@ pub fn discover_pagination_transitions(page_url: &str) -> Vec<DiscoveredTransiti
     }
 
     // Strategy 3: ?start=N
-    if let Some(start_str) = url.query_pairs().find(|(k, _)| k == "start").map(|(_, v)| v.to_string()) {
+    if let Some(start_str) = url
+        .query_pairs()
+        .find(|(k, _)| k == "start")
+        .map(|(_, v)| v.to_string())
+    {
         if let Ok(start) = start_str.parse::<u32>() {
             let step = detect_page_size(&url).unwrap_or(10);
             let next_start = start + step;
@@ -136,14 +148,18 @@ pub fn discover_pagination_transitions(page_url: &str) -> Vec<DiscoveredTransiti
 
     // Strategy 4: Path-based /page/N
     let path = url.path().to_string();
-    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let segments: Vec<String> = path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
     for i in (1..segments.len()).rev() {
         let prev = segments[i - 1].to_lowercase();
         if (prev == "page" || prev == "p") && segments[i].parse::<u32>().is_ok() {
             if let Ok(page_num) = segments[i].parse::<u32>() {
                 let next_page = page_num + 1;
                 let mut new_segments = segments.clone();
-                new_segments[i] = Box::leak(next_page.to_string().into_boxed_str());
+                new_segments[i] = next_page.to_string();
                 let new_path = format!("/{}", new_segments.join("/"));
                 url.set_path(&new_path);
                 results.push(DiscoveredTransition {
@@ -159,13 +175,6 @@ pub fn discover_pagination_transitions(page_url: &str) -> Vec<DiscoveredTransiti
     }
 
     results
-}
-
-/// Check if a URL is same-origin as the root.
-fn is_same_origin(url_str: &str, root_origin: &str) -> bool {
-    url::Url::parse(url_str)
-        .map(|u| u.origin().ascii_serialization() == root_origin)
-        .unwrap_or(false)
 }
 
 /// Detect page size from query params.

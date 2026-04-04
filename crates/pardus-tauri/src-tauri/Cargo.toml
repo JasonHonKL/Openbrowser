@@ -22,8 +22,10 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 url = { workspace = true }
+chrono = { workspace = true }
 
 tokio-tungstenite = "0.26"
+tokio-util = "0.7"
 futures-util = { workspace = true }
 
 pardus-core = { path = "../../pardus-core" }

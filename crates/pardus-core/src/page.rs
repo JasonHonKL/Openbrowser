@@ -14,6 +14,40 @@ use crate::interact::element::{ElementHandle, element_to_handle};
 
 use pardus_debug::{NetworkRecord, ResourceType, Initiator};
 
+// ---------------------------------------------------------------------------
+// Redirect chain types
+// ---------------------------------------------------------------------------
+
+/// One hop in an HTTP redirect chain.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RedirectHop {
+    /// The URL that issued the redirect.
+    pub from: String,
+    /// The target URL from the Location header.
+    pub to: String,
+    /// The HTTP status code (301, 302, 303, 307, 308).
+    pub status: u16,
+}
+
+/// The full redirect chain captured during an HTTP request.
+///
+/// Ordered from first redirect to last. Empty when no redirects occurred.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RedirectChain {
+    pub hops: Vec<RedirectHop>,
+}
+
+impl RedirectChain {
+    pub fn is_empty(&self) -> bool {
+        self.hops.is_empty()
+    }
+
+    /// The original URL before any redirects.
+    pub fn original_url(&self) -> Option<&str> {
+        self.hops.first().map(|h| h.from.as_str())
+    }
+}
+
 /// Serializable snapshot of a page's state.
 ///
 /// Used to transfer page data over the wire (e.g., via CDP WebSocket)
@@ -25,6 +59,8 @@ pub struct PageSnapshot {
     pub content_type: Option<String>,
     pub title: Option<String>,
     pub html: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redirect_chain: Option<RedirectChain>,
 }
 
 pub struct Page {
@@ -41,6 +77,8 @@ pub struct Page {
     /// Pre-built semantic tree for non-HTML content (e.g., PDFs).
     /// When `Some`, `semantic_tree()` returns this instead of parsing HTML.
     pub cached_tree: Option<SemanticTree>,
+    /// HTTP redirect chain (empty / None when no redirects occurred).
+    pub redirect_chain: Option<RedirectChain>,
 }
 
 impl Page {
@@ -138,7 +176,7 @@ impl Page {
         let start = Instant::now();
 
         let retry_config = app.config.read().retry.clone();
-        let response = Self::fetch_with_retry(app, &effective_url, &req_ctx.headers, &retry_config).await?;
+        let (response, redirect_hops) = Self::fetch_with_retry(app, &effective_url, &req_ctx.headers, &retry_config).await?;
 
         let http_version = format_http_version(response.version());
         let status = response.status().as_u16();
@@ -300,6 +338,11 @@ impl Page {
             csp: csp_policy,
             frame_tree,
             cached_tree: None,
+            redirect_chain: if redirect_hops.is_empty() {
+                None
+            } else {
+                Some(RedirectChain { hops: redirect_hops })
+            },
         })
     }
 
@@ -325,6 +368,7 @@ impl Page {
             csp: None,
             frame_tree: None,
             cached_tree: None,
+            redirect_chain: None,
         }
     }
 
@@ -344,25 +388,55 @@ impl Page {
             csp: None,
             frame_tree: None,
             cached_tree: None,
+            redirect_chain: None,
         })
     }
 
     /// Execute HTTP request with configurable retry and exponential backoff.
+    ///
+    /// Returns the response and any HTTP redirect hops that were captured.
     async fn fetch_with_retry(
         app: &Arc<App>,
         url: &str,
         extra_headers: &std::collections::HashMap<String, String>,
         retry_config: &crate::config::RetryConfig,
-    ) -> anyhow::Result<rquest::Response> {
+    ) -> anyhow::Result<(rquest::Response, Vec<RedirectHop>)> {
+        let max_redirects = app.config.read().max_redirects;
+        let redirect_hops: Arc<std::sync::Mutex<Vec<RedirectHop>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut attempt = 0u32;
 
         loop {
+            // Clear stale hops from previous retry attempts
+            redirect_hops.lock().unwrap().clear();
+
+            let hops_clone = redirect_hops.clone();
+            let max = max_redirects;
+
             let mut request_builder = app.http_client.get(url);
 
             // Apply interceptor-modified headers
             for (name, value) in extra_headers {
                 request_builder = request_builder.header(name.as_str(), value.as_str());
             }
+
+            // Set custom redirect policy to capture each hop
+            request_builder = request_builder.redirect(
+                rquest::redirect::Policy::custom(move |attempt| {
+                    if attempt.previous().len() >= max {
+                        return attempt.error("too many redirects");
+                    }
+                    let from = attempt.previous().last()
+                        .map(|u| u.to_string())
+                        .unwrap_or_default();
+                    let to = attempt.url().to_string();
+                    let status = attempt.status().as_u16();
+                    if let Ok(mut hops) = hops_clone.lock() {
+                        hops.push(RedirectHop { from, to, status });
+                    }
+                    attempt.follow()
+                })
+            );
 
             // Build the request so we can retry it
             let request = request_builder
@@ -384,7 +458,11 @@ impl Page {
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                         continue;
                     }
-                    return Ok(response);
+                    // Extract collected redirect hops
+                    let hops = Arc::try_unwrap(redirect_hops)
+                        .map(|m| m.into_inner().unwrap_or_default())
+                        .unwrap_or_default();
+                    return Ok((response, hops));
                 }
                 Err(e) if (e.is_timeout() || e.is_connect()) && attempt < retry_config.max_retries => {
                     attempt += 1;
@@ -420,6 +498,7 @@ impl Page {
             csp: None,
             frame_tree: None,
             cached_tree: Some(tree),
+            redirect_chain: None,
         })
     }
 
@@ -442,6 +521,7 @@ impl Page {
             csp: None,
             frame_tree: None,
             cached_tree: Some(tree),
+            redirect_chain: None,
         })
     }
 
@@ -522,6 +602,7 @@ impl Page {
             csp: None,
             frame_tree: None,
             cached_tree: None,
+            redirect_chain: None,
         }
     }
 
@@ -538,6 +619,7 @@ impl Page {
             csp: None,
             frame_tree: Some(frame_tree),
             cached_tree: None,
+            redirect_chain: None,
         }
     }
 
@@ -560,6 +642,7 @@ impl Page {
             csp: None,
             frame_tree: Some(frame_tree),
             cached_tree: None,
+            redirect_chain: None,
         }
     }
 
@@ -704,6 +787,7 @@ impl Page {
             content_type: self.content_type.clone(),
             title: self.title(),
             html: self.html.html(),
+            redirect_chain: self.redirect_chain.clone(),
         }
     }
 
@@ -721,6 +805,7 @@ impl Page {
             csp: self.csp.clone(),
             frame_tree: None,
             cached_tree: self.cached_tree.clone(),
+            redirect_chain: self.redirect_chain.clone(),
         }
     }
 

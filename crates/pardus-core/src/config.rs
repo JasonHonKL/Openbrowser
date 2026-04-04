@@ -294,6 +294,9 @@ pub struct BrowserConfig {
     pub retry: RetryConfig,
     /// Maximum file upload size in bytes (default: 50MB).
     pub max_upload_size: usize,
+    /// Maximum number of HTTP redirects to follow (default: 10).
+    /// Set to 0 to disable automatic redirect following.
+    pub max_redirects: usize,
 }
 
 impl BrowserConfig {
@@ -327,6 +330,7 @@ impl Default for BrowserConfig {
             dedup_window_ms: 0,
             retry: RetryConfig::default(),
             max_upload_size: 50 * 1024 * 1024,
+            max_redirects: 10,
         }
     }
 }

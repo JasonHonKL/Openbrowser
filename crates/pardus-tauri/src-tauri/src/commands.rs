@@ -1,7 +1,8 @@
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use serde::Serialize;
 
 use crate::AppState;
+use crate::cdp_bridge::{CdpEventRecord, BridgeStatus};
 
 // ---------------------------------------------------------------------------
 // Instance management commands
@@ -90,9 +91,9 @@ pub async fn kill_instance(
     state: tauri::State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    state.cdp_bridge.disconnect(&id).await;
     let mut instances = state.instances.lock().unwrap();
     if let Some(mut inst) = instances.remove(&id) {
-        // Close browser window if open
         if let Some(label) = &inst.browser_window_label {
             if let Some(window) = app.get_webview_window(label) {
                 let _ = window.close();
@@ -110,9 +111,15 @@ pub async fn kill_all_instances(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    let ids: Vec<String> = {
+        let instances = state.instances.lock().unwrap();
+        instances.keys().cloned().collect()
+    };
+    for id in &ids {
+        state.cdp_bridge.disconnect(id).await;
+    }
     let mut instances = state.instances.lock().unwrap();
     for (_, mut inst) in instances.drain() {
-        // Close browser window if open
         if let Some(label) = &inst.browser_window_label {
             if let Some(window) = app.get_webview_window(label) {
                 let _ = window.close();
@@ -257,7 +264,6 @@ pub async fn navigate_browser_window(
         inst.current_url = Some(url);
     }
 
-    let _ = parsed_url;
     Ok(())
 }
 
@@ -274,6 +280,161 @@ pub async fn close_browser_window(
     if let Some(inst) = instances.get_mut(&instance_id) {
         inst.browser_window_label = None;
         inst.current_url = None;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CDP bridge commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn connect_instance(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+) -> Result<(), String> {
+    let port = {
+        let instances = state.instances.lock().unwrap();
+        instances
+            .get(&instance_id)
+            .ok_or_else(|| format!("instance '{}' not found", instance_id))?
+            .port
+    };
+
+    state.cdp_bridge.connect(instance_id.clone(), port, app).await;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn disconnect_instance(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+) -> Result<(), String> {
+    state.cdp_bridge.disconnect(&instance_id).await;
+
+    let mut instances = state.instances.lock().unwrap();
+    if let Some(inst) = instances.get_mut(&instance_id) {
+        inst.agent_status = "idle".to_string();
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn execute_cdp(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+    method: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let resp = state
+        .cdp_bridge
+        .send_command(&instance_id, method, params)
+        .await?;
+
+    // CDP responses wrap the payload in {"id":N,"result":{...}} — extract inner result
+    if let Some(result) = resp.get("result").cloned() {
+        Ok(result)
+    } else if resp.get("error").is_some() {
+        Err(resp["error"]["message"].as_str().unwrap_or("CDP error").to_string())
+    } else {
+        Ok(resp)
+    }
+}
+
+#[tauri::command]
+pub async fn get_semantic_tree(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+) -> Result<serde_json::Value, String> {
+    let resp = state
+        .cdp_bridge
+        .send_command(
+            &instance_id,
+            "Pardus.semanticTree".to_string(),
+            serde_json::json!({}),
+        )
+        .await?;
+
+    // CDP responses wrap the payload in {"id":N,"result":{...}} — extract inner result
+    if let Some(result) = resp.get("result").cloned() {
+        Ok(result)
+    } else if resp.get("error").is_some() {
+        Err(resp["error"]["message"].as_str().unwrap_or("CDP error").to_string())
+    } else {
+        Ok(resp)
+    }
+}
+
+#[tauri::command]
+pub async fn get_instance_events(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+    limit: Option<usize>,
+    since: Option<i64>,
+) -> Result<Vec<CdpEventRecord>, String> {
+    Ok(state
+        .cdp_bridge
+        .get_events(&instance_id, limit.unwrap_or(100), since)
+        .await)
+}
+
+#[tauri::command]
+pub async fn get_bridge_status(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+) -> Result<BridgeStatus, String> {
+    state
+        .cdp_bridge
+        .get_status(&instance_id)
+        .await
+        .ok_or_else(|| format!("no bridge for instance '{}'", instance_id))
+}
+
+// ---------------------------------------------------------------------------
+// Agent status commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn set_agent_status(
+    state: tauri::State<'_, AppState>,
+    instance_id: String,
+    status: String,
+) -> Result<(), String> {
+    let valid = [
+        "idle", "connected", "running", "paused",
+        "waiting-challenge", "error",
+    ];
+    if !valid.contains(&status.as_str()) {
+        return Err(format!(
+            "invalid status '{}'. expected: {}",
+            status,
+            valid.join(", ")
+        ));
+    }
+
+    let mut instances = state.instances.lock().unwrap();
+    if let Some(inst) = instances.get_mut(&instance_id) {
+        let old = inst.agent_status.clone();
+        inst.agent_status = status.clone();
+
+        drop(instances);
+
+        if let Some(handle) = state.app_handle.lock().unwrap().as_ref() {
+            let _ = handle.emit(
+                "agent-status-changed",
+                serde_json::json!({
+                    "instance_id": instance_id,
+                    "old_status": old,
+                    "new_status": status,
+                }),
+            );
+        }
+    } else {
+        return Err(format!("instance '{}' not found", instance_id));
     }
 
     Ok(())

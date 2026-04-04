@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, HashSet};
 
-use pardus_core::SemanticTree;
 use pardus_core::NavigationGraph;
+use pardus_core::SemanticTree;
 
 /// Unique fingerprint identifying a distinct page state.
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
@@ -34,12 +33,14 @@ pub struct ViewState {
     pub fragment: Option<String>,
     /// Fingerprint components.
     pub fingerprint: Fingerprint,
-    /// Semantic tree from pardus-core.
-    pub semantic_tree: SemanticTree,
-    /// Navigation graph from pardus-core.
-    pub navigation_graph: NavigationGraph,
+    /// Semantic tree from pardus-core (only when `store_full_trees` is enabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_tree: Option<SemanticTree>,
+    /// Navigation graph from pardus-core (only when `store_full_trees` is enabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigation_graph: Option<NavigationGraph>,
     /// The set of subresource URLs loaded by this state.
-    pub resource_urls: BTreeSet<String>,
+    pub resource_urls: HashSet<String>,
     /// Page title.
     pub title: Option<String>,
     /// HTTP status code.

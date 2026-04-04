@@ -1,5 +1,6 @@
 /target
 **/*.rs.bk
+**/*.bak
 Cargo.lock
 .DS_Store
 **/.DS_Store
@@ -16,7 +17,9 @@ adapters/node/pardus-playwright/dist/
 
 # Tauri frontend
 crates/pardus-tauri/node_modules/
+crates/pardus-tauri/frontend/node_modules/
 crates/pardus-tauri/dist/
+crates/pardus-tauri/frontend/dist/
 
 # Web dashboard
 web/node_modules/

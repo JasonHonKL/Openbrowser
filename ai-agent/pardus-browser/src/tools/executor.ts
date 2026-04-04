@@ -39,6 +39,19 @@ interface ToolCallArgs {
   min_count?: number;
   timeout_ms?: number;
   interval_ms?: number;
+  // Extraction args
+  filter?: string;
+  query?: string;
+  case_sensitive?: boolean;
+  // Interaction args
+  target_id?: string;
+  // Download/Upload args
+  filename?: string;
+  file_path?: string;
+  // PDF args
+  // Feed args
+  // Network args
+  resource_types?: string[];
 }
 
 /**
@@ -323,6 +336,48 @@ export class ToolExecutor {
         return this.handleList();
       case 'browser_get_state':
         return this.handleGetState(typedArgs);
+      case 'browser_extract_text':
+        return this.handleExtractText(typedArgs);
+      case 'browser_extract_links':
+        return this.handleExtractLinks(typedArgs);
+      case 'browser_find':
+        return this.handleFind(typedArgs);
+      case 'browser_extract_table':
+        return this.handleExtractTable(typedArgs);
+      case 'browser_extract_metadata':
+        return this.handleExtractMetadata(typedArgs);
+      case 'browser_screenshot':
+        return this.handleScreenshot(typedArgs);
+      case 'browser_select':
+        return this.handleSelect(typedArgs);
+      case 'browser_press_key':
+        return this.handlePressKey(typedArgs);
+      case 'browser_hover':
+        return this.handleHover(typedArgs);
+      case 'browser_tab_new':
+        return this.handleTabNew(typedArgs);
+      case 'browser_tab_switch':
+        return this.handleTabSwitch(typedArgs);
+      case 'browser_tab_close':
+        return this.handleTabClose(typedArgs);
+      case 'browser_download':
+        return this.handleDownload(typedArgs);
+      case 'browser_upload':
+        return this.handleUpload(typedArgs);
+      case 'browser_pdf_extract':
+        return this.handlePdfExtract(typedArgs);
+      case 'browser_feed_parse':
+        return this.handleFeedParse(typedArgs);
+      case 'browser_network_block':
+        return this.handleNetworkBlock(typedArgs);
+      case 'browser_network_log':
+        return this.handleNetworkLog(typedArgs);
+      case 'browser_iframe_enter':
+        return this.handleIframeEnter(typedArgs);
+      case 'browser_iframe_exit':
+        return this.handleIframeExit(typedArgs);
+      case 'browser_diff':
+        return this.handleDiff(typedArgs);
       default:
         return {
           success: false,
@@ -1162,6 +1217,612 @@ export class ToolExecutor {
         content: '',
         error: error instanceof Error ? error.message : String(error),
       };
+    }
+  }
+
+  // ── Extraction handlers ────────────────────────────────────────
+
+  private async handleExtractText(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.extractText(args.selector);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Text extraction failed' };
+      }
+
+      const content = `## Extracted Text\n\n` +
+        `- **Word Count**: ${result.word_count}\n` +
+        `- **Scope**: ${args.selector || 'full page'}\n\n` +
+        `---\n\n${result.text}`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleExtractLinks(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.extractLinks(args.filter, args.domain);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Link extraction failed' };
+      }
+
+      const filterNote = args.filter ? ` (filtered: "${args.filter}")` : '';
+      const domainNote = args.domain ? ` (domain: ${args.domain})` : '';
+      const linkLines = result.links.map((l, i) => {
+        const id = l.element_id ? ` [#${l.element_id}]` : '';
+        return `${i + 1}. [${l.text}](${l.href})${id}`;
+      }).join('\n');
+
+      const content = `## Links (${result.count})${filterNote}${domainNote}\n\n${linkLines || 'No links found.'}`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleFind(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.query) {
+      return { success: false, content: '', error: 'Missing query' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.find(args.query, args.case_sensitive);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Find failed' };
+      }
+
+      const matchLines = result.matches.map((m, i) => {
+        const id = m.element_id ? ` [element #${m.element_id}]` : '';
+        return `${i + 1}. "${m.text}"${id}\n   ...${m.context}...`;
+      }).join('\n\n');
+
+      const content = `## Search Results\n\n` +
+        `- **Query**: "${args.query}"\n` +
+        `- **Matches**: ${result.count}\n\n` +
+        `---\n\n${matchLines || 'No matches found.'}`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleExtractTable(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.extractTable(args.selector);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Table extraction failed' };
+      }
+
+      const headerLine = `| ${result.headers.join(' | ')} |`;
+      const separatorLine = `| ${result.headers.map(() => '---').join(' | ')} |`;
+      const dataLines = result.rows.map(row => `| ${row.join(' | ')} |`).join('\n');
+
+      const content = `## Table (${result.row_count} rows)\n\n` +
+        `${headerLine}\n${separatorLine}\n${dataLines}`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleExtractMetadata(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.extractMetadata();
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Metadata extraction failed' };
+      }
+
+      let content = `## Page Metadata\n\n` +
+        `- **Title**: ${result.title}\n`;
+
+      if (result.description) {
+        content += `- **Description**: ${result.description}\n`;
+      }
+
+      if (Object.keys(result.open_graph).length > 0) {
+        content += `\n### Open Graph\n\n`;
+        for (const [key, val] of Object.entries(result.open_graph)) {
+          content += `- **og:${key}**: ${val}\n`;
+        }
+      }
+
+      if (result.json_ld.length > 0) {
+        content += `\n### JSON-LD\n\n\`\`\`json\n${JSON.stringify(result.json_ld, null, 2)}\n\`\`\`\n`;
+      }
+
+      if (Object.keys(result.meta).length > 0) {
+        content += `\n### Meta Tags\n\n`;
+        for (const [key, val] of Object.entries(result.meta)) {
+          content += `- **${key}**: ${val}\n`;
+        }
+      }
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleScreenshot(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.screenshot();
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Screenshot failed' };
+      }
+
+      const content = `## Screenshot\n\n` +
+        `- **MIME Type**: ${result.mime_type}\n` +
+        `- **Data Length**: ${result.data.length} bytes (base64)\n\n` +
+        `![Screenshot](data:${result.mime_type};base64,${result.data.substring(0, 100)}...)`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ── Interaction handlers ───────────────────────────────────────
+
+  private async handleSelect(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.element_id) {
+      return { success: false, content: '', error: 'Missing element_id' };
+    }
+    if (!args.value) {
+      return { success: false, content: '', error: 'Missing value' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.selectOption(args.element_id, args.value);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Select failed' };
+      }
+
+      return {
+        success: true,
+        content: `Selected "${result.selected_value}" in dropdown ${args.element_id}`,
+      };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handlePressKey(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.key) {
+      return { success: false, content: '', error: 'Missing key' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.pressKey(args.key);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Press key failed' };
+      }
+
+      return {
+        success: true,
+        content: `Pressed key: ${args.key}`,
+      };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleHover(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.element_id) {
+      return { success: false, content: '', error: 'Missing element_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.hover(args.element_id);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Hover failed' };
+      }
+
+      return {
+        success: true,
+        content: `Hovered over element ${args.element_id}`,
+      };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ── Tab management handlers ────────────────────────────────────
+
+  private async handleTabNew(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.url) {
+      return { success: false, content: '', error: 'Missing url' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.newTab(args.url);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Failed to create tab' };
+      }
+
+      return {
+        success: true,
+        content: `## New Tab\n\n- **Target ID**: ${result.target_id}\n- **URL**: ${args.url}`,
+      };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleTabSwitch(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.target_id) {
+      return { success: false, content: '', error: 'Missing target_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.switchTab(args.target_id);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Failed to switch tab' };
+      }
+
+      return {
+        success: true,
+        content: `Switched to tab ${args.target_id}`,
+      };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleTabClose(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) {
+      return { success: false, content: '', error: 'Missing instance_id' };
+    }
+    if (!args.target_id) {
+      return { success: false, content: '', error: 'Missing target_id' };
+    }
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    }
+
+    try {
+      const result = await instance.closeTab(args.target_id);
+
+      if (!result.success) {
+        return { success: false, content: '', error: result.error || 'Failed to close tab' };
+      }
+
+      return {
+        success: true,
+        content: `Closed tab ${args.target_id}`,
+      };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ── Download/Upload handlers ────────────────────────────────────
+
+  private async handleDownload(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+    if (!args.url) return { success: false, content: '', error: 'Missing url' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.download(args.url, args.filename);
+      if (!result.success) return { success: false, content: '', error: result.error || 'Download failed' };
+
+      const content = `## Download Complete\n\n` +
+        `- **URL**: ${args.url}\n` +
+        `- **Path**: ${result.path}\n` +
+        `- **Size**: ${result.size_bytes} bytes (${(result.size_bytes / 1024).toFixed(1)} KB)\n` +
+        (result.mime_type ? `- **MIME Type**: ${result.mime_type}\n` : '');
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleUpload(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+    if (!args.element_id) return { success: false, content: '', error: 'Missing element_id' };
+    if (!args.file_path) return { success: false, content: '', error: 'Missing file_path' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.upload(args.element_id, args.file_path);
+      if (!result.success) return { success: false, content: '', error: result.error || 'Upload failed' };
+
+      return { success: true, content: `Uploaded "${args.file_path}" to element ${args.element_id}` };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ── Content handlers ────────────────────────────────────────────
+
+  private async handlePdfExtract(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+    if (!args.url) return { success: false, content: '', error: 'Missing url' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.pdfExtract(args.url);
+      if (!result.success) return { success: false, content: '', error: result.error || 'PDF extraction failed' };
+
+      let content = `## PDF Extract\n\n` +
+        `- **URL**: ${args.url}\n` +
+        `- **Pages**: ${result.page_count}\n`;
+
+      if (result.forms && result.forms.length > 0) {
+        content += `- **Form Fields**: ${result.forms.length}\n`;
+      }
+
+      content += `\n---\n\n${result.text.substring(0, 8000)}`;
+      if (result.text.length > 8000) content += '\n\n... [truncated]';
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleFeedParse(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+    if (!args.url) return { success: false, content: '', error: 'Missing url' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.feedParse(args.url);
+      if (!result.success) return { success: false, content: '', error: result.error || 'Feed parse failed' };
+
+      let content = `## ${result.feed_type.toUpperCase()} Feed\n\n` +
+        `- **Title**: ${result.title}\n` +
+        (result.description ? `- **Description**: ${result.description}\n` : '') +
+        `- **Items**: ${result.item_count}\n\n`;
+
+      for (const item of result.items.slice(0, 20)) {
+        content += `### ${item.title}\n`;
+        content += `- **Link**: ${item.link}\n`;
+        if (item.pub_date) content += `- **Date**: ${item.pub_date}\n`;
+        if (item.author) content += `- **Author**: ${item.author}\n`;
+        if (item.description) content += `- **Summary**: ${item.description.substring(0, 200)}${item.description.length > 200 ? '...' : ''}\n`;
+        content += '\n';
+      }
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ── Network control handlers ────────────────────────────────────
+
+  private async handleNetworkBlock(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+    if (!args.resource_types) return { success: false, content: '', error: 'Missing resource_types' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.networkBlock(args.resource_types);
+      if (!result.success) return { success: false, content: '', error: result.error || 'Network block failed' };
+
+      const content = args.resource_types.length === 0
+        ? '## Network Block Cleared\n\nAll resource blocks removed.'
+        : `## Network Block Set\n\nBlocked resource types: ${result.blocked_types.join(', ')}`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleNetworkLog(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.networkLog(args.filter);
+      if (!result.success) return { success: false, content: '', error: result.error || 'Network log failed' };
+
+      let content = `## Network Log (${result.count} requests)\n\n`;
+
+      for (const req of result.requests.slice(0, 30)) {
+        content += `- **${req.method}** ${req.status} ${req.url.substring(0, 100)}${req.url.length > 100 ? '...' : ''} (${req.size_bytes} bytes, ${req.duration_ms}ms)\n`;
+      }
+
+      if (result.count > 30) content += `\n... and ${result.count - 30} more requests`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ── Iframe handlers ─────────────────────────────────────────────
+
+  private async handleIframeEnter(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+    if (!args.element_id) return { success: false, content: '', error: 'Missing element_id' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.iframeEnter(args.element_id);
+      if (!result.success) return { success: false, content: '', error: result.error || 'Failed to enter iframe' };
+
+      return { success: true, content: `Entered iframe ${args.element_id}. Subsequent commands now operate within the iframe.` };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleIframeExit(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.iframeExit();
+      if (!result.success) return { success: false, content: '', error: result.error || 'Failed to exit iframe' };
+
+      return { success: true, content: 'Returned to parent page context.' };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ── Page diff handler ───────────────────────────────────────────
+
+  private async handleDiff(args: ToolCallArgs): Promise<ToolResult> {
+    if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
+
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+
+    try {
+      const result = await instance.diff();
+      if (!result.success) return { success: false, content: '', error: result.error || 'Diff failed' };
+
+      let content = `## Page Diff (${result.change_count} changes)\n\n`;
+
+      if (result.summary) content += `${result.summary}\n\n`;
+
+      for (const change of result.changes.slice(0, 30)) {
+        const icon = change.type === 'added' ? '+' : change.type === 'removed' ? '-' : '~';
+        content += `${icon} **[${change.type}]** ${change.selector}\n`;
+        if (change.type === 'added' && change.text) content += `  "${change.text.substring(0, 100)}"\n`;
+        if (change.type === 'removed' && change.text) content += `  "${change.text.substring(0, 100)}"\n`;
+        if (change.type === 'modified' && change.old_text && change.new_text) {
+          content += `  was: "${change.old_text.substring(0, 80)}"\n`;
+          content += `  now: "${change.new_text.substring(0, 80)}"\n`;
+        }
+      }
+
+      if (result.change_count > 30) content += `\n... and ${result.change_count - 30} more changes`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
     }
   }
 

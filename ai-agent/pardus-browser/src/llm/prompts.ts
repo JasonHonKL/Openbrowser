@@ -28,7 +28,7 @@ Pages are returned as semantic trees with element IDs in brackets:
 - Use browser_get_action_plan when unsure what to do next
 - Scroll with browser_scroll(direction) to see more content — scroll returns the updated tree
 
-Tools (19): browser_new, browser_navigate, browser_click, browser_fill, browser_submit, browser_scroll, browser_close, browser_list, browser_get_state, browser_get_action_plan, browser_auto_fill, browser_wait, browser_get/cookies, browser_set/delete_cookie, browser_get/set/delete/clear_storage.`;
+Tools (40): browser_new, browser_navigate, browser_click, browser_fill, browser_submit, browser_scroll, browser_close, browser_list, browser_get_state, browser_get_action_plan, browser_auto_fill, browser_wait, browser_get/set/delete_cookies, browser_get/set/delete/clear_storage, browser_extract_text, browser_extract_links, browser_find, browser_extract_table, browser_extract_metadata, browser_screenshot, browser_select, browser_press_key, browser_hover, browser_tab_new/switch/close, browser_download, browser_upload, browser_pdf_extract, browser_feed_parse, browser_network_block, browser_network_log, browser_iframe_enter/exit, browser_diff.`;
 
 /** Extended prompt — used for the first few rounds, then compacted */
 export const EXTENDED_PROMPT = `
@@ -50,6 +50,24 @@ Fill multiple fields at once with smart matching (by name, label, placeholder, t
 ### Cookie & Storage
 - browser_get_cookies / browser_set_cookie / browser_delete_cookie
 - browser_get_storage / browser_set_storage / browser_delete_storage / browser_clear_storage
+
+### Extraction (for data search)
+- **browser_extract_text** — Get clean readable text, strips nav/ads/footers. Use instead of reading the full semantic tree when you only need the content.
+- **browser_extract_links** — Get all links with optional text/domain filter. Use for search result pages, sitemaps, resource discovery.
+- **browser_find** — Search for text within the page (like Ctrl+F). Returns matches with context.
+- **browser_extract_table** — Parse HTML tables to structured headers + rows.
+- **browser_extract_metadata** — Get JSON-LD, Open Graph, meta tags. Useful for understanding page content type.
+- **browser_screenshot** — Capture page as image for visual analysis.
+
+### Interaction
+- **browser_select** — Choose dropdown options.
+- **browser_press_key** — Send keyboard events (Enter, Tab, Escape, arrows).
+- **browser_hover** — Trigger hover effects (menus, tooltips, previews).
+
+### Tab Management
+- **browser_tab_new** — Open URLs in parallel tabs.
+- **browser_tab_switch** — Switch between tabs.
+- **browser_tab_close** — Close tabs when done.
 
 ## Tips
 - If a click doesn't navigate, try with wait_ms or browser_wait

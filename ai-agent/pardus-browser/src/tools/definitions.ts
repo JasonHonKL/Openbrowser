@@ -504,9 +504,412 @@ export const browserTools: ToolDefinition[] = [
       },
     },
   },
+  // ── Extraction tools ────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'browser_extract_text',
+      description: 'Extract clean text content from the page, stripping navigation, ads, footers, scripts, and styles. Returns the main readable text. Optionally scope to a CSS selector.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          selector: {
+            type: 'string',
+            description: 'Optional CSS selector to scope extraction (e.g., "article", "#main-content"). Defaults to the full page body.',
+          },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_extract_links',
+      description: 'Extract all links from the page with their text, href, and element IDs. Optionally filter by text pattern or domain.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          filter: {
+            type: 'string',
+            description: 'Optional text pattern to filter links (case-insensitive substring match). E.g., "pdf" to find PDF links.',
+          },
+          domain: {
+            type: 'string',
+            description: 'Optional domain to filter links (e.g., "example.com"). Only links matching this domain are returned.',
+          },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_find',
+      description: 'Search for text within the current page. Returns matching text with surrounding context and element IDs. Like Ctrl+F in a browser.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          query: {
+            type: 'string',
+            description: 'Text to search for',
+          },
+          case_sensitive: {
+            type: 'boolean',
+            description: 'Whether search should be case sensitive (default: false)',
+          },
+        },
+        required: ['instance_id', 'query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_extract_table',
+      description: 'Extract an HTML table as structured data (headers + rows). Returns the first table by default, or a table matching a CSS selector.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          selector: {
+            type: 'string',
+            description: 'Optional CSS selector for the table. Defaults to the first <table> on the page.',
+          },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_extract_metadata',
+      description: 'Extract page metadata: JSON-LD structured data, Open Graph tags, meta tags, and title. Useful for understanding page content without reading the full page.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_screenshot',
+      description: 'Take a screenshot of the current page. Returns a base64-encoded image. Use when the semantic tree is insufficient (complex layouts, charts, captchas).',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
+  // ── Interaction tools ───────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'browser_select',
+      description: 'Select an option in a dropdown <select> element by its value.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          element_id: {
+            type: 'string',
+            description: 'Element ID of the <select> dropdown (e.g., "#5")',
+          },
+          value: {
+            type: 'string',
+            description: 'Value of the option to select',
+          },
+        },
+        required: ['instance_id', 'element_id', 'value'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_press_key',
+      description: 'Press a keyboard key. Use for Enter to submit, Escape to close modals, Tab to move between fields, Arrow keys for navigation, etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          key: {
+            type: 'string',
+            description: 'Key to press: "Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", " ", or a single character.',
+          },
+        },
+        required: ['instance_id', 'key'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_hover',
+      description: 'Hover over an element. Triggers mouseover events — useful for revealing dropdown menus, tooltips, preview cards, and hover-triggered content.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          element_id: {
+            type: 'string',
+            description: 'Element ID to hover over (e.g., "#3")',
+          },
+        },
+        required: ['instance_id', 'element_id'],
+      },
+    },
+  },
+  // ── Tab management tools ────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'browser_tab_new',
+      description: 'Open a new tab in the current browser instance and navigate to a URL. Returns the target ID for the new tab.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          url: {
+            type: 'string',
+            description: 'URL to open in the new tab',
+          },
+        },
+        required: ['instance_id', 'url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_tab_switch',
+      description: 'Switch to a different tab by its target ID. The semantic tree will update to reflect the active tab.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          target_id: {
+            type: 'string',
+            description: 'The target ID of the tab to switch to (from browser_tab_new or list)',
+          },
+        },
+        required: ['instance_id', 'target_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_tab_close',
+      description: 'Close a tab by its target ID.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: {
+            type: 'string',
+            description: 'The browser instance ID',
+          },
+          target_id: {
+            type: 'string',
+            description: 'The target ID of the tab to close',
+          },
+        },
+        required: ['instance_id', 'target_id'],
+      },
+    },
+  },
+  // ── Download/Upload tools ───────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'browser_download',
+      description: 'Download a file from a URL. Returns the file path, size, and MIME type. Useful for saving CSVs, PDFs, images, and documents found during browsing.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          url: { type: 'string', description: 'URL of the file to download' },
+          filename: { type: 'string', description: 'Optional filename to save as. Defaults to the URL filename.' },
+        },
+        required: ['instance_id', 'url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_upload',
+      description: 'Upload a file to an <input type="file"> element.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          element_id: { type: 'string', description: 'Element ID of the file input (e.g., "#3")' },
+          file_path: { type: 'string', description: 'Path to the file to upload' },
+        },
+        required: ['instance_id', 'element_id', 'file_path'],
+      },
+    },
+  },
+  // ── Content tools ───────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'browser_pdf_extract',
+      description: 'Extract text content from a PDF URL. Returns the text, page count, and any tables or form fields.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          url: { type: 'string', description: 'URL of the PDF file' },
+        },
+        required: ['instance_id', 'url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_feed_parse',
+      description: 'Parse an RSS or Atom feed URL. Returns feed title, description, and items. Useful for monitoring news sources and blogs.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          url: { type: 'string', description: 'URL of the RSS/Atom feed' },
+        },
+        required: ['instance_id', 'url'],
+      },
+    },
+  },
+  // ── Network control tools ───────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'browser_network_block',
+      description: 'Block network requests by resource type. Speeds up browsing by skipping images, fonts, stylesheets, or media. Pass empty array to clear all blocks.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          resource_types: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Resource types to block: "image", "stylesheet", "font", "media", "websocket", "manifest". Pass empty array to clear all blocks.',
+          },
+        },
+        required: ['instance_id', 'resource_types'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_network_log',
+      description: 'Get a log of all network requests made by the page. Returns URLs, methods, status codes, MIME types, sizes, and durations.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          filter: { type: 'string', description: 'Optional URL pattern to filter requests (substring match)' },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
+  // ── Iframe tools ────────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'browser_iframe_enter',
+      description: 'Enter an iframe to interact with its content. After entering, subsequent commands operate within the iframe.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          element_id: { type: 'string', description: 'Element ID of the iframe to enter (e.g., "#5")' },
+        },
+        required: ['instance_id', 'element_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_iframe_exit',
+      description: 'Exit the current iframe and return to the parent page context.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
+  // ── Page diff tool ──────────────────────────────────────────────
+  {
+    type: 'function',
+    function: {
+      name: 'browser_diff',
+      description: 'Compare the current page state against the last saved snapshot. Returns changes (added, removed, modified elements). Use to detect what changed after a click, scroll, or wait.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
 ];
 
-export type BrowserToolName = 
+export type BrowserToolName =
   | 'browser_new'
   | 'browser_navigate'
   | 'browser_click'
@@ -525,4 +928,25 @@ export type BrowserToolName =
   | 'browser_wait'
   | 'browser_get_state'
   | 'browser_list'
-  | 'browser_close';
+  | 'browser_close'
+  | 'browser_extract_text'
+  | 'browser_extract_links'
+  | 'browser_find'
+  | 'browser_extract_table'
+  | 'browser_extract_metadata'
+  | 'browser_screenshot'
+  | 'browser_select'
+  | 'browser_press_key'
+  | 'browser_hover'
+  | 'browser_tab_new'
+  | 'browser_tab_switch'
+  | 'browser_tab_close'
+  | 'browser_download'
+  | 'browser_upload'
+  | 'browser_pdf_extract'
+  | 'browser_feed_parse'
+  | 'browser_network_block'
+  | 'browser_network_log'
+  | 'browser_iframe_enter'
+  | 'browser_iframe_exit'
+  | 'browser_diff';
