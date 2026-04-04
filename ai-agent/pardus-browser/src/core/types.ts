@@ -184,3 +184,209 @@ export interface BrowserWaitResult {
   reason?: string;
   error?: string;
 }
+
+// ── Extraction types ──────────────────────────────────────────────
+
+export interface BrowserExtractTextResult {
+  success: boolean;
+  text: string;
+  word_count: number;
+  error?: string;
+}
+
+export interface LinkItem {
+  text: string;
+  href: string;
+  element_id?: string;
+}
+
+export interface BrowserExtractLinksResult {
+  success: boolean;
+  links: LinkItem[];
+  count: number;
+  error?: string;
+}
+
+export interface TextMatch {
+  text: string;
+  context: string;
+  element_id?: string;
+}
+
+export interface BrowserFindResult {
+  success: boolean;
+  matches: TextMatch[];
+  count: number;
+  error?: string;
+}
+
+export interface BrowserExtractTableResult {
+  success: boolean;
+  headers: string[];
+  rows: string[][];
+  row_count: number;
+  error?: string;
+}
+
+export interface BrowserExtractMetadataResult {
+  success: boolean;
+  title: string;
+  description?: string;
+  json_ld: unknown[];
+  open_graph: Record<string, string>;
+  meta: Record<string, string>;
+  error?: string;
+}
+
+export interface BrowserScreenshotResult {
+  success: boolean;
+  data: string; // base64-encoded image
+  mime_type: string;
+  error?: string;
+}
+
+// ── Interaction types ─────────────────────────────────────────────
+
+export interface BrowserSelectResult {
+  success: boolean;
+  selected_value: string;
+  error?: string;
+}
+
+export interface BrowserPressKeyResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface BrowserHoverResult {
+  success: boolean;
+  error?: string;
+}
+
+// ── Tab management types ──────────────────────────────────────────
+
+export interface TabInfo {
+  target_id: string;
+  url: string;
+  title: string;
+  active: boolean;
+}
+
+export interface BrowserTabNewResult {
+  success: boolean;
+  target_id: string;
+  error?: string;
+}
+
+export interface BrowserTabSwitchResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface BrowserTabCloseResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface BrowserTabListResult {
+  success: boolean;
+  tabs: TabInfo[];
+  error?: string;
+}
+
+// ── Download/Upload types ──────────────────────────────────────────
+
+export interface BrowserDownloadResult {
+  success: boolean;
+  path: string;
+  size_bytes: number;
+  mime_type?: string;
+  error?: string;
+}
+
+export interface BrowserUploadResult {
+  success: boolean;
+  error?: string;
+}
+
+// ── Content types ──────────────────────────────────────────────────
+
+export interface BrowserPdfExtractResult {
+  success: boolean;
+  text: string;
+  page_count: number;
+  tables?: string[][];
+  forms?: Record<string, string>[];
+  error?: string;
+}
+
+export interface FeedItem {
+  title: string;
+  link: string;
+  description?: string;
+  pub_date?: string;
+  author?: string;
+  categories?: string[];
+}
+
+export interface BrowserFeedParseResult {
+  success: boolean;
+  feed_type: 'rss' | 'atom';
+  title: string;
+  description?: string;
+  items: FeedItem[];
+  item_count: number;
+  error?: string;
+}
+
+// ── Network control types ──────────────────────────────────────────
+
+export interface BrowserNetworkBlockResult {
+  success: boolean;
+  blocked_types: string[];
+  error?: string;
+}
+
+export interface BrowserNetworkLogResult {
+  success: boolean;
+  requests: Array<{
+    url: string;
+    method: string;
+    status: number;
+    mime_type: string;
+    size_bytes: number;
+    duration_ms: number;
+  }>;
+  count: number;
+  error?: string;
+}
+
+// ── Iframe types ───────────────────────────────────────────────────
+
+export interface BrowserIframeEnterResult {
+  success: boolean;
+  error?: string;
+}
+
+export interface BrowserIframeExitResult {
+  success: boolean;
+  error?: string;
+}
+
+// ── Page diff types ────────────────────────────────────────────────
+
+export interface PageDiffChange {
+  type: 'added' | 'removed' | 'modified';
+  selector: string;
+  text?: string;
+  old_text?: string;
+  new_text?: string;
+}
+
+export interface BrowserDiffResult {
+  success: boolean;
+  changes: PageDiffChange[];
+  change_count: number;
+  summary: string;
+  error?: string;
+}

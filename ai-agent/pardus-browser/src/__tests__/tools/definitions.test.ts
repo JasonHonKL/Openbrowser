@@ -4,8 +4,8 @@ import { browserTools, BrowserToolName } from '../../tools/definitions.js';
 
 describe('Tool Definitions', () => {
   describe('browserTools', () => {
-    it('should have 19 tools', () => {
-      assert.strictEqual(browserTools.length, 19);
+    it('should have 40 tools', () => {
+      assert.strictEqual(browserTools.length, 40);
     });
 
     it('should include all expected tools', () => {
@@ -247,9 +247,30 @@ describe('Tool Definitions', () => {
         'browser_get_state',
         'browser_list',
         'browser_close',
+        'browser_extract_text',
+        'browser_extract_links',
+        'browser_find',
+        'browser_extract_table',
+        'browser_extract_metadata',
+        'browser_screenshot',
+        'browser_select',
+        'browser_press_key',
+        'browser_hover',
+        'browser_tab_new',
+        'browser_tab_switch',
+        'browser_tab_close',
+        'browser_download',
+        'browser_upload',
+        'browser_pdf_extract',
+        'browser_feed_parse',
+        'browser_network_block',
+        'browser_network_log',
+        'browser_iframe_enter',
+        'browser_iframe_exit',
+        'browser_diff',
       ];
 
-      assert.strictEqual(toolNames.length, 19);
+      assert.strictEqual(toolNames.length, 40);
     });
   });
 });

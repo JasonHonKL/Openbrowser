@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::config::CrawlConfig;
-use crate::state::ViewState;
+use crate::state::{ViewState, ViewStateId};
 use crate::transition::Transition;
 
 /// The complete knowledge graph of a site.
@@ -14,8 +14,8 @@ pub struct KnowledgeGraph {
     pub built_at: String,
     /// Crawl configuration used.
     pub config: CrawlConfig,
-    /// All view-states, keyed by ViewStateId string.
-    pub states: HashMap<String, ViewState>,
+    /// All view-states, keyed by ViewStateId.
+    pub states: HashMap<ViewStateId, ViewState>,
     /// All transitions.
     pub transitions: Vec<Transition>,
     /// Summary statistics.
@@ -60,7 +60,8 @@ impl KnowledgeGraph {
 
     /// Add a view-state. Returns true if it was new.
     pub fn add_state(&mut self, state: ViewState) -> bool {
-        self.states.insert(state.id.0.clone(), state).is_none()
+        let id = state.id.clone();
+        self.states.insert(id, state).is_none()
     }
 
     /// Add a transition.
@@ -69,12 +70,17 @@ impl KnowledgeGraph {
     }
 
     /// Check if a ViewStateId is already known.
-    pub fn has_state(&self, id: &str) -> bool {
+    pub fn has_state(&self, id: &ViewStateId) -> bool {
         self.states.contains_key(id)
     }
 
     /// Compute final stats.
-    pub fn compute_stats(&mut self, max_depth_reached: usize, pages_crawled: usize, duration_ms: u128) {
+    pub fn compute_stats(
+        &mut self,
+        max_depth_reached: usize,
+        pages_crawled: usize,
+        duration_ms: u128,
+    ) {
         self.stats = KgStats {
             total_states: self.states.len(),
             total_transitions: self.transitions.len(),

@@ -61,7 +61,7 @@ pub async fn handle_websocket(
                     Ok(event) => {
                         let session = session.lock().await;
                         let domain = event.method.split('.').next().unwrap_or("");
-                        if session.is_domain_enabled(domain) || domain == "Target" {
+                        if session.is_domain_enabled(domain) || domain == "Target" || domain == "Pardus" {
                             let json = serde_json::to_string(&event).unwrap_or_default();
                             drop(session);
                             let msg = tungstenite::Message::Text(json.into());

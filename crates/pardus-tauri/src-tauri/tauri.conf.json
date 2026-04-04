@@ -4,8 +4,10 @@
   "version": "0.1.0",
   "identifier": "ai.pardus.browser",
   "build": {
-    "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "cd ../../crates/pardus-tauri/frontend && npm run build",
+    "beforeDevCommand": "cd ../../crates/pardus-tauri/frontend && npm run dev",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../frontend/dist"
   },
   "app": {
     "windows": [

@@ -114,6 +114,7 @@ fn output_result(result: &InteractionResult, format: &OutputFormatArg) {
                         &tree,
                         None,
                         None,
+                        new_page.redirect_chain.as_ref(),
                     )
                     .unwrap_or_default();
                     println!("{}", json);
@@ -166,6 +167,7 @@ fn output_result(result: &InteractionResult, format: &OutputFormatArg) {
                         &tree,
                         None,
                         None,
+                        new_page.redirect_chain.as_ref(),
                     )
                     .unwrap_or_default();
                     println!("{}", json);

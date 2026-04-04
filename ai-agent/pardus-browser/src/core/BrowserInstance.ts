@@ -19,6 +19,33 @@ import {
   BrowserGetActionPlanResult,
   BrowserAutoFillResult,
   BrowserWaitResult,
+  BrowserExtractTextResult,
+  LinkItem,
+  BrowserExtractLinksResult,
+  TextMatch,
+  BrowserFindResult,
+  BrowserExtractTableResult,
+  BrowserExtractMetadataResult,
+  BrowserScreenshotResult,
+  BrowserSelectResult,
+  BrowserPressKeyResult,
+  BrowserHoverResult,
+  BrowserTabNewResult,
+  BrowserTabSwitchResult,
+  BrowserTabCloseResult,
+  BrowserTabListResult,
+  TabInfo,
+  BrowserDownloadResult,
+  BrowserUploadResult,
+  BrowserPdfExtractResult,
+  FeedItem,
+  BrowserFeedParseResult,
+  BrowserNetworkBlockResult,
+  BrowserNetworkLogResult,
+  BrowserIframeEnterResult,
+  BrowserIframeExitResult,
+  PageDiffChange,
+  BrowserDiffResult,
 } from './types.js';
 
 interface CDPResponse {
@@ -811,6 +838,680 @@ export class BrowserInstance extends EventEmitter {
         success: false,
         satisfied: false,
         condition,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Extraction methods ────────────────────────────────────────
+
+  async extractText(selector?: string): Promise<BrowserExtractTextResult> {
+    try {
+      const scopeExpr = selector
+        ? `document.querySelector("${selector.replace(/"/g, '\\"')}")`
+        : 'document.body';
+
+      const result = await this.sendCommand(
+        'Runtime.evaluate',
+        {
+          expression: `(function() {
+            const root = ${scopeExpr};
+            if (!root) return { error: "Element not found: ${selector?.replace(/"/g, '\\"')}" };
+            const clone = root.cloneNode(true);
+            const remove = ['script','style','noscript','svg','iframe','nav','footer','header','aside','[role="navigation"]','[role="banner"]','[role="contentinfo"]','[role="complementary"]','.ad','.ads','.advertisement','.sidebar','.cookie-banner','.popup','.modal'];
+            for (const sel of remove) {
+              clone.querySelectorAll(sel).forEach(el => el.remove());
+            }
+            clone.querySelectorAll('*').forEach(el => {
+              const style = el.getAttribute('style') || '';
+              if (style.includes('display:none') || style.includes('display: none') || style.includes('visibility:hidden') || style.includes('visibility: hidden')) {
+                el.remove();
+              }
+            });
+            let text = clone.textContent || '';
+            text = text.replace(/\\s+/g, ' ').replace(/\\s+\\n/g, '\\n').trim();
+            const wordCount = text.split(/\\s+/).filter(w => w.length > 0).length;
+            return { text, wordCount };
+          })()`,
+          returnByValue: true,
+        }
+      ) as { result?: { value?: { text?: string; wordCount?: number; error?: string } } };
+
+      const value = result.result?.value;
+      if (value?.error) {
+        return { success: false, text: '', word_count: 0, error: value.error };
+      }
+
+      return {
+        success: true,
+        text: value?.text ?? '',
+        word_count: value?.wordCount ?? 0,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        text: '',
+        word_count: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async extractLinks(filter?: string, domain?: string): Promise<BrowserExtractLinksResult> {
+    try {
+      const result = await this.sendCommand(
+        'Runtime.evaluate',
+        {
+          expression: `(function() {
+            const links = Array.from(document.querySelectorAll('a[href]'));
+            const filterLower = ${JSON.stringify(filter?.toLowerCase() ?? '')};
+            const domainFilter = ${JSON.stringify(domain?.toLowerCase() ?? '')};
+            const mapped = links.map(a => ({
+              text: (a.textContent || '').trim().substring(0, 200),
+              href: a.href,
+              element_id: a.getAttribute('data-pardus-id') || null,
+            })).filter(l => {
+              if (!l.href || l.href === '#' || l.href.startsWith('javascript:')) return false;
+              if (filterLower && !l.text.toLowerCase().includes(filterLower) && !l.href.toLowerCase().includes(filterLower)) return false;
+              if (domainFilter) {
+                try { if (!new URL(l.href).hostname.toLowerCase().includes(domainFilter)) return false; } catch { return false; }
+              }
+              return true;
+            });
+            return { links: mapped, count: mapped.length };
+          })()`,
+          returnByValue: true,
+        }
+      ) as { result?: { value?: { links?: Array<{ text: string; href: string; element_id?: string | null }>; count?: number } } };
+
+      const value = result.result?.value;
+      const links: LinkItem[] = (value?.links ?? []).map(l => ({
+        text: l.text,
+        href: l.href,
+        ...(l.element_id ? { element_id: l.element_id } : {}),
+      }));
+
+      return {
+        success: true,
+        links,
+        count: value?.count ?? links.length,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        links: [],
+        count: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async find(query: string, caseSensitive = false): Promise<BrowserFindResult> {
+    try {
+      const result = await this.sendCommand(
+        'Runtime.evaluate',
+        {
+          expression: `(function() {
+            const query = ${JSON.stringify(query)};
+            const caseSensitive = ${caseSensitive};
+            const matches = [];
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
+            while (walker.nextNode()) {
+              const node = walker.currentNode;
+              const text = node.textContent;
+              if (!text) continue;
+              const searchIn = caseSensitive ? text : text.toLowerCase();
+              const searchFor = caseSensitive ? query : query.toLowerCase();
+              let idx = searchIn.indexOf(searchFor);
+              while (idx !== -1) {
+                const start = Math.max(0, idx - 50);
+                const end = Math.min(text.length, idx + query.length + 50);
+                const context = (start > 0 ? '...' : '') + text.substring(start, end) + (end < text.length ? '...' : '');
+                const parent = node.parentElement;
+                matches.push({
+                  text: text.substring(idx, idx + query.length),
+                  context,
+                  element_id: parent ? parent.getAttribute('data-pardus-id') || null : null,
+                });
+                if (matches.length >= 50) return { matches, count: matches.length, truncated: true };
+                idx = searchIn.indexOf(searchFor, idx + 1);
+              }
+            }
+            return { matches, count: matches.length, truncated: false };
+          })()`,
+          returnByValue: true,
+        }
+      ) as { result?: { value?: { matches?: TextMatch[]; count?: number; truncated?: boolean } } };
+
+      const value = result.result?.value;
+      return {
+        success: true,
+        matches: value?.matches ?? [],
+        count: value?.count ?? 0,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        matches: [],
+        count: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async extractTable(selector?: string): Promise<BrowserExtractTableResult> {
+    try {
+      const tableSelector = selector ? `"${selector.replace(/"/g, '\\"')}"` : '"table"';
+      const result = await this.sendCommand(
+        'Runtime.evaluate',
+        {
+          expression: `(function() {
+            const table = document.querySelector(${tableSelector});
+            if (!table) return { error: "Table not found" };
+            const headers = [];
+            const rows = [];
+            const thCells = table.querySelectorAll('thead th, tr:first-child th');
+            thCells.forEach(th => headers.push(th.textContent.trim()));
+            const bodyRows = table.querySelectorAll('tbody tr, tr');
+            bodyRows.forEach((tr, idx) => {
+              if (idx === 0 && thCells.length > 0 && tr.querySelector('th')) return;
+              const cells = Array.from(tr.querySelectorAll('td, th')).map(c => c.textContent.trim());
+              if (cells.length > 0) rows.push(cells);
+            });
+            if (headers.length === 0 && rows.length > 0) {
+              rows[0].forEach(() => headers.push(''));
+            }
+            return { headers, rows, row_count: rows.length };
+          })()`,
+          returnByValue: true,
+        }
+      ) as { result?: { value?: { headers?: string[]; rows?: string[][]; row_count?: number; error?: string } } };
+
+      const value = result.result?.value;
+      if (value?.error) {
+        return { success: false, headers: [], rows: [], row_count: 0, error: value.error };
+      }
+
+      return {
+        success: true,
+        headers: value?.headers ?? [],
+        rows: value?.rows ?? [],
+        row_count: value?.row_count ?? 0,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        headers: [],
+        rows: [],
+        row_count: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async extractMetadata(): Promise<BrowserExtractMetadataResult> {
+    try {
+      const result = await this.sendCommand(
+        'Runtime.evaluate',
+        {
+          expression: `(function() {
+            const title = document.title || '';
+            const descMeta = document.querySelector('meta[name="description"]');
+            const description = descMeta ? descMeta.getAttribute('content') || '' : '';
+            const jsonLd = Array.from(document.querySelectorAll('script[type="application/ld+json"]'))
+              .map(s => { try { return JSON.parse(s.textContent); } catch { return null; } })
+              .filter(v => v !== null);
+            const og = {};
+            document.querySelectorAll('meta[property^="og:"]').forEach(m => {
+              const prop = m.getAttribute('property');
+              const content = m.getAttribute('content');
+              if (prop && content) og[prop.replace('og:', '')] = content;
+            });
+            const meta = {};
+            document.querySelectorAll('meta[name]').forEach(m => {
+              const name = m.getAttribute('name');
+              const content = m.getAttribute('content');
+              if (name && content && name !== 'viewport' && name !== 'charset') {
+                meta[name] = content;
+              }
+            });
+            return { title, description, json_ld: jsonLd, open_graph: og, meta };
+          })()`,
+          returnByValue: true,
+        }
+      ) as { result?: { value?: BrowserExtractMetadataResult } };
+
+      const value = result.result?.value;
+      return {
+        success: true,
+        title: value?.title ?? '',
+        description: value?.description,
+        json_ld: value?.json_ld ?? [],
+        open_graph: value?.open_graph ?? {},
+        meta: value?.meta ?? {},
+      };
+    } catch (error) {
+      return {
+        success: false,
+        title: '',
+        json_ld: [],
+        open_graph: {},
+        meta: {},
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async screenshot(): Promise<BrowserScreenshotResult> {
+    try {
+      const result = await this.sendCommand(
+        'Page.captureScreenshot',
+        { format: 'png' },
+        this.requestTimeout
+      ) as { data?: string; mimeType?: string };
+
+      return {
+        success: true,
+        data: result.data ?? '',
+        mime_type: result.mimeType ?? 'image/png',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        data: '',
+        mime_type: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Interaction methods ───────────────────────────────────────
+
+  async selectOption(elementId: string, value: string): Promise<BrowserSelectResult> {
+    try {
+      const result = await this.sendCommand(
+        'Runtime.evaluate',
+        {
+          expression: `(function() {
+            const el = document.querySelector('[data-pardus-id="${elementId}"]');
+            if (!el) return { success: false, error: 'Element not found' };
+            if (el.tagName !== 'SELECT') return { success: false, error: 'Element is not a <select> dropdown' };
+            el.value = ${JSON.stringify(value)};
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return { success: true, selected_value: el.value };
+          })()`,
+          returnByValue: true,
+        }
+      ) as { result?: { value?: { success: boolean; selected_value?: string; error?: string } } };
+
+      const val = result.result?.value;
+      return {
+        success: val?.success ?? false,
+        selected_value: val?.selected_value ?? value,
+        error: val?.error,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        selected_value: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async pressKey(key: string): Promise<BrowserPressKeyResult> {
+    try {
+      const keyMap: Record<string, { key: string; code: string; keyCode: number; text?: string }> = {
+        'Enter':      { key: 'Enter',      code: 'Enter',      keyCode: 13 },
+        'Tab':        { key: 'Tab',         code: 'Tab',        keyCode: 9 },
+        'Escape':     { key: 'Escape',      code: 'Escape',     keyCode: 27 },
+        'Backspace':  { key: 'Backspace',   code: 'Backspace',  keyCode: 8 },
+        'Delete':     { key: 'Delete',      code: 'Delete',     keyCode: 46 },
+        'ArrowUp':    { key: 'ArrowUp',     code: 'ArrowUp',    keyCode: 38 },
+        'ArrowDown':  { key: 'ArrowDown',   code: 'ArrowDown',  keyCode: 40 },
+        'ArrowLeft':  { key: 'ArrowLeft',   code: 'ArrowLeft',  keyCode: 37 },
+        'ArrowRight': { key: 'ArrowRight',  code: 'ArrowRight', keyCode: 39 },
+        'Home':       { key: 'Home',        code: 'Home',       keyCode: 36 },
+        'End':        { key: 'End',         code: 'End',        keyCode: 35 },
+        'PageUp':     { key: 'PageUp',      code: 'PageUp',     keyCode: 33 },
+        'PageDown':   { key: 'PageDown',    code: 'PageDown',   keyCode: 34 },
+        ' ':          { key: ' ',           code: 'Space',      keyCode: 32, text: ' ' },
+      };
+
+      const keyInfo = keyMap[key] ?? { key, code: `Key${key.toUpperCase()}`, keyCode: key.charCodeAt(0), text: key };
+
+      // Dispatch keyDown, char (if printable), keyUp
+      const events = ['keyDown', 'keyUp'];
+      if (keyInfo.text) events.splice(1, 0, 'char');
+
+      for (const type of events) {
+        await this.sendCommand('Input.dispatchKeyEvent', {
+          type,
+          key: keyInfo.key,
+          code: keyInfo.code,
+          windowsVirtualKeyCode: keyInfo.keyCode,
+          ...(type === 'char' && keyInfo.text ? { text: keyInfo.text } : {}),
+        });
+      }
+
+      await this.waitForDomSettle(50, 1000);
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async hover(elementId: string): Promise<BrowserHoverResult> {
+    try {
+      const result = await this.sendCommand(
+        'Runtime.evaluate',
+        {
+          expression: `(function() {
+            const el = document.querySelector('[data-pardus-id="${elementId}"]');
+            if (!el) return { success: false, error: 'Element not found' };
+            const events = ['pointerenter','pointerover','mouseover','mouseenter'];
+            for (const type of events) {
+              el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+            }
+            return { success: true };
+          })()`,
+          returnByValue: true,
+        }
+      ) as { result?: { value?: { success: boolean; error?: string } } };
+
+      const val = result.result?.value;
+      if (!val?.success) {
+        return { success: false, error: val?.error || 'Hover failed' };
+      }
+
+      await this.waitForDomSettle(100, 2000);
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Tab management methods ────────────────────────────────────
+
+  async newTab(url: string): Promise<BrowserTabNewResult> {
+    try {
+      const result = await this.sendCommand(
+        'Target.createTarget',
+        { url }
+      ) as { targetId?: string };
+
+      return {
+        success: true,
+        target_id: result.targetId ?? '',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        target_id: '',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async switchTab(targetId: string): Promise<BrowserTabSwitchResult> {
+    try {
+      await this.sendCommand('Target.activateTarget', { targetId });
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async closeTab(targetId: string): Promise<BrowserTabCloseResult> {
+    try {
+      await this.sendCommand('Target.closeTarget', { targetId });
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async listTabs(): Promise<BrowserTabListResult> {
+    try {
+      const result = await this.sendCommand(
+        'Target.getTargets',
+        {}
+      ) as { targetInfos?: Array<{ targetId: string; url: string; title: string; type: string }> };
+
+      const tabs: TabInfo[] = (result.targetInfos ?? [])
+        .filter(t => t.type === 'page')
+        .map(t => ({
+          target_id: t.targetId,
+          url: t.url,
+          title: t.title,
+          active: false,
+        }));
+
+      return {
+        success: true,
+        tabs,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        tabs: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Download/Upload methods ─────────────────────────────────────
+
+  async download(url: string, filename?: string): Promise<BrowserDownloadResult> {
+    try {
+      const result = await this.sendCommand(
+        'Pardus.download',
+        { url, filename },
+        60000
+      ) as { path?: string; size_bytes?: number; mime_type?: string };
+
+      return {
+        success: true,
+        path: result.path ?? '',
+        size_bytes: result.size_bytes ?? 0,
+        mime_type: result.mime_type,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        path: '',
+        size_bytes: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async upload(elementId: string, filePath: string): Promise<BrowserUploadResult> {
+    try {
+      await this.sendCommand('DOM.setFileInputFiles', {
+        elementId,
+        files: [filePath],
+      });
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Content methods ─────────────────────────────────────────────
+
+  async pdfExtract(url: string): Promise<BrowserPdfExtractResult> {
+    try {
+      const result = await this.sendCommand(
+        'Pardus.pdfExtract',
+        { url },
+        60000
+      ) as { text?: string; page_count?: number; tables?: string[][]; forms?: Record<string, string>[] };
+
+      return {
+        success: true,
+        text: result.text ?? '',
+        page_count: result.page_count ?? 0,
+        tables: result.tables,
+        forms: result.forms,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        text: '',
+        page_count: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async feedParse(url: string): Promise<BrowserFeedParseResult> {
+    try {
+      const result = await this.sendCommand(
+        'Pardus.feedParse',
+        { url },
+        30000
+      ) as { feed_type?: string; title?: string; description?: string; items?: FeedItem[] };
+
+      return {
+        success: true,
+        feed_type: (result.feed_type as 'rss' | 'atom') ?? 'rss',
+        title: result.title ?? '',
+        description: result.description,
+        items: result.items ?? [],
+        item_count: result.items?.length ?? 0,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        feed_type: 'rss',
+        title: '',
+        items: [],
+        item_count: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Network control methods ─────────────────────────────────────
+
+  async networkBlock(resourceTypes: string[]): Promise<BrowserNetworkBlockResult> {
+    try {
+      await this.sendCommand('Pardus.networkBlock', {
+        resource_types: resourceTypes,
+      });
+
+      return {
+        success: true,
+        blocked_types: resourceTypes,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        blocked_types: [],
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async networkLog(filter?: string): Promise<BrowserNetworkLogResult> {
+    try {
+      const result = await this.sendCommand(
+        'Pardus.networkLog',
+        { filter }
+      ) as { requests?: Array<{
+        url: string;
+        method: string;
+        status: number;
+        mime_type: string;
+        size_bytes: number;
+        duration_ms: number;
+      }> };
+
+      return {
+        success: true,
+        requests: result.requests ?? [],
+        count: result.requests?.length ?? 0,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        requests: [],
+        count: 0,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Iframe methods ──────────────────────────────────────────────
+
+  async iframeEnter(elementId: string): Promise<BrowserIframeEnterResult> {
+    try {
+      await this.sendCommand('Pardus.iframeEnter', { elementId });
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  async iframeExit(): Promise<BrowserIframeExitResult> {
+    try {
+      await this.sendCommand('Pardus.iframeExit', {});
+
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Page diff method ────────────────────────────────────────────
+
+  async diff(): Promise<BrowserDiffResult> {
+    try {
+      const result = await this.sendCommand(
+        'Pardus.diff',
+        {}
+      ) as { changes?: PageDiffChange[]; change_count?: number; summary?: string };
+
+      return {
+        success: true,
+        changes: result.changes ?? [],
+        change_count: result.change_count ?? 0,
+        summary: result.summary ?? '',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        changes: [],
+        change_count: 0,
+        summary: '',
         error: error instanceof Error ? error.message : String(error),
       };
     }

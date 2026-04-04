@@ -78,7 +78,18 @@ impl CdpDomainHandler for PardusDomain {
                 let value = params["value"].as_str().unwrap_or("").to_string();
                 let fields_param = params.get("fields").cloned();
 
-                let result = handle_interact(&action, &selector, &value, target_id, &fields_param, ctx).await;
+                let result = if !action.is_empty() {
+                    let session_id = session.session_id.clone();
+                    emit_action_started(ctx, &action, &selector, &value, &session_id);
+
+                    let res = handle_interact(&action, &selector, &value, target_id, &fields_param, ctx).await;
+
+                    emit_action_completed(ctx, &action, &selector, &res, &session_id);
+                    res
+                } else {
+                    handle_interact(&action, &selector, &value, target_id, &fields_param, ctx).await
+                };
+
                 HandleResult::Success(result)
             }
             "getNavigationGraph" => {
@@ -377,4 +388,41 @@ fn collect_interactive_nodes(node: &pardus_core::SemanticNode, out: &mut Vec<Val
     for child in &node.children {
         collect_interactive_nodes(child, out);
     }
+}
+
+fn emit_action_started(ctx: &DomainContext, action: &str, selector: &str, value: &str, session_id: &str) {
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let mut target: Value = serde_json::json!({ "selector": selector });
+    if !value.is_empty() {
+        target["value"] = serde_json::json!(value);
+    }
+    ctx.event_bus.send(crate::protocol::message::CdpEvent {
+        method: "Pardus.actionStarted".to_string(),
+        params: serde_json::json!({
+            "action": action,
+            "target": target,
+            "timestamp": timestamp,
+        }),
+        session_id: Some(session_id.to_string()),
+    });
+}
+
+fn emit_action_completed(ctx: &DomainContext, action: &str, selector: &str, result: &Value, session_id: &str) {
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let success = result["success"].as_bool().unwrap_or(false);
+    let event_method = if success {
+        "Pardus.actionCompleted"
+    } else {
+        "Pardus.actionFailed"
+    };
+    ctx.event_bus.send(crate::protocol::message::CdpEvent {
+        method: event_method.to_string(),
+        params: serde_json::json!({
+            "action": action,
+            "selector": selector,
+            "result": result,
+            "timestamp": timestamp,
+        }),
+        session_id: Some(session_id.to_string()),
+    });
 }

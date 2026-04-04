@@ -10,14 +10,16 @@ pub struct CrawlConfig {
     pub max_pages: usize,
     /// Polite delay between requests in milliseconds.
     pub delay_ms: u64,
-    /// Whether to verify transitions by following them.
-    pub verify_transitions: bool,
+    /// Maximum concurrent page fetches.
+    pub concurrency: usize,
     /// Whether to discover pagination transitions.
     pub discover_pagination: bool,
     /// Whether to discover hash navigation transitions.
     pub discover_hash_nav: bool,
     /// Whether to discover form submission transitions.
     pub discover_forms: bool,
+    /// Whether to store full semantic trees in view states.
+    pub store_full_trees: bool,
     /// Proxy configuration for HTTP traffic.
     pub proxy: ProxyConfig,
 }
@@ -28,10 +30,11 @@ impl Default for CrawlConfig {
             max_depth: 3,
             max_pages: 50,
             delay_ms: 200,
-            verify_transitions: true,
+            concurrency: 4,
             discover_pagination: true,
             discover_hash_nav: true,
             discover_forms: false,
+            store_full_trees: true,
             proxy: ProxyConfig::default(),
         }
     }

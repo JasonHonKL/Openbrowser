@@ -1,7 +1,6 @@
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, HashSet};
 
-use pardus_core::{SemanticNode, SemanticRole, SemanticTree};
+use pardus_core::{SemanticNode, SemanticTree};
 use scraper::Html;
 use url::Url;
 
@@ -11,7 +10,7 @@ use crate::state::{Fingerprint, ViewStateId};
 pub fn compute_fingerprint(
     page_url: &str,
     tree: &SemanticTree,
-    resource_urls: &BTreeSet<String>,
+    resource_urls: &HashSet<String>,
 ) -> (Fingerprint, ViewStateId) {
     let parsed = Url::parse(page_url).ok();
     let url_path = parsed
@@ -40,7 +39,7 @@ pub fn compute_fingerprint(
 }
 
 /// Discover subresource URLs from HTML.
-pub fn discover_resources(html: &Html, base_url: &str) -> BTreeSet<String> {
+pub fn discover_resources(html: &Html, base_url: &str) -> HashSet<String> {
     let records = pardus_debug::discover::discover_subresources(html, base_url, 0);
     records.into_iter().map(|r| r.url).collect()
 }
@@ -66,90 +65,56 @@ fn extract_content_params(url: Option<&Url>) -> BTreeMap<String, String> {
 /// For each node: "{role}:{tag}:{is_interactive}:{children_count}"
 /// Does NOT include name, href, action, or text content.
 fn hash_tree_structure(tree: &SemanticTree) -> String {
-    let mut skeleton = String::new();
-    walk_skeleton(&tree.root, &mut skeleton);
-    let hash = blake3::hash(skeleton.as_bytes());
-    hash.to_hex().to_string()
+    let mut hasher = blake3::Hasher::new();
+    walk_skeleton_hash(&tree.root, &mut hasher);
+    hasher.finalize().to_hex().to_string()
 }
 
-fn walk_skeleton(node: &SemanticNode, out: &mut String) {
-    out.push_str(&format!(
+fn walk_skeleton_hash(node: &SemanticNode, hasher: &mut blake3::Hasher) {
+    let buf = format!(
         "{}:{}:{}:{}\n",
-        role_str(&node.role),
+        node.role.role_str(),
         node.tag,
         node.is_interactive,
         node.children.len()
-    ));
+    );
+    hasher.update(buf.as_bytes());
     for child in &node.children {
-        walk_skeleton(child, out);
+        walk_skeleton_hash(child, hasher);
     }
 }
 
-fn role_str(role: &SemanticRole) -> String {
-    match role {
-        SemanticRole::Document => "document".to_string(),
-        SemanticRole::Banner => "banner".to_string(),
-        SemanticRole::Navigation => "navigation".to_string(),
-        SemanticRole::Main => "main".to_string(),
-        SemanticRole::ContentInfo => "contentinfo".to_string(),
-        SemanticRole::Complementary => "complementary".to_string(),
-        SemanticRole::Region => "region".to_string(),
-        SemanticRole::Form => "form".to_string(),
-        SemanticRole::Search => "search".to_string(),
-        SemanticRole::Article => "article".to_string(),
-        SemanticRole::Heading { .. } => "heading".to_string(),
-        SemanticRole::Link => "link".to_string(),
-        SemanticRole::Button => "button".to_string(),
-        SemanticRole::TextBox => "textbox".to_string(),
-        SemanticRole::FileInput => "fileinput".to_string(),
-        SemanticRole::Checkbox => "checkbox".to_string(),
-        SemanticRole::Radio => "radio".to_string(),
-        SemanticRole::Combobox => "combobox".to_string(),
-        SemanticRole::List => "list".to_string(),
-        SemanticRole::ListItem => "listitem".to_string(),
-        SemanticRole::Table => "table".to_string(),
-        SemanticRole::Row => "row".to_string(),
-        SemanticRole::Cell => "cell".to_string(),
-        SemanticRole::ColumnHeader => "columnheader".to_string(),
-        SemanticRole::RowHeader => "rowheader".to_string(),
-        SemanticRole::Image => "img".to_string(),
-        SemanticRole::Dialog => "dialog".to_string(),
-        SemanticRole::IFrame => "iframe".to_string(),
-        SemanticRole::Generic => "generic".to_string(),
-        SemanticRole::StaticText => "text".to_string(),
-        SemanticRole::Other(s) => s.clone(),
+/// Hash a sorted set of resource URLs using incremental hashing.
+fn hash_resource_set(resources: &HashSet<String>) -> String {
+    let mut sorted: Vec<&String> = resources.iter().collect();
+    sorted.sort();
+    let mut hasher = blake3::Hasher::new();
+    for url in sorted {
+        hasher.update(url.as_bytes());
+        hasher.update(b"\n");
     }
+    hasher.finalize().to_hex().to_string()
 }
 
-/// Hash a sorted set of resource URLs.
-fn hash_resource_set(resources: &BTreeSet<String>) -> String {
-    let concatenated: String = resources
-        .iter()
-        .map(|u| u.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let hash = blake3::hash(concatenated.as_bytes());
-    hash.to_hex().to_string()
-}
-
-/// Compute ViewStateId from fingerprint components.
+/// Compute ViewStateId from fingerprint components using incremental hashing.
 fn compute_view_state_id(fp: &Fingerprint) -> ViewStateId {
-    let mut composite = String::new();
-    composite.push_str(&fp.url_path);
-    composite.push('|');
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(fp.url_path.as_bytes());
+    hasher.update(b"|");
     for (k, v) in &fp.content_query_params {
-        composite.push_str(&format!("{}={}", k, v));
+        hasher.update(k.as_bytes());
+        hasher.update(b"=");
+        hasher.update(v.as_bytes());
     }
-    composite.push('|');
-    composite.push_str(&fp.tree_hash);
-    composite.push('|');
-    composite.push_str(&fp.resource_set_hash);
+    hasher.update(b"|");
+    hasher.update(fp.tree_hash.as_bytes());
+    hasher.update(b"|");
+    hasher.update(fp.resource_set_hash.as_bytes());
     if let Some(ref frag) = fp.fragment {
-        composite.push('|');
-        composite.push_str(frag);
+        hasher.update(b"|");
+        hasher.update(frag.as_bytes());
     }
-    let hash = blake3::hash(composite.as_bytes());
-    ViewStateId(hash.to_hex().to_string())
+    ViewStateId(hasher.finalize().to_hex().to_string())
 }
 
 #[cfg(test)]
@@ -170,7 +135,6 @@ mod tests {
         let t2 = build_tree(
             r#"<html><body><nav><a href="/x">B</a></nav><main><h1>World</h1></main></body></html>"#,
         );
-        // Same structure, different text → same hash
         assert_eq!(hash_tree_structure(&t1), hash_tree_structure(&t2));
     }
 
@@ -180,17 +144,16 @@ mod tests {
         let t2 = build_tree(
             r#"<html><body><nav><a href="/x">A</a><a href="/y">B</a></nav></body></html>"#,
         );
-        // Different structure (1 link vs 2 links)
         assert_ne!(hash_tree_structure(&t1), hash_tree_structure(&t2));
     }
 
     #[test]
     fn test_resource_set_hash_consistent() {
-        let mut set1 = BTreeSet::new();
+        let mut set1 = HashSet::new();
         set1.insert("https://example.com/a.css".to_string());
         set1.insert("https://example.com/b.js".to_string());
 
-        let mut set2 = BTreeSet::new();
+        let mut set2 = HashSet::new();
         set2.insert("https://example.com/b.js".to_string());
         set2.insert("https://example.com/a.css".to_string());
 
@@ -200,7 +163,7 @@ mod tests {
     #[test]
     fn test_view_state_id_deterministic() {
         let tree = build_tree("<html><body><h1>Test</h1></body></html>");
-        let mut resources = BTreeSet::new();
+        let mut resources = HashSet::new();
         resources.insert("https://example.com/style.css".to_string());
 
         let (fp1, id1) = compute_fingerprint("https://example.com/", &tree, &resources);
@@ -213,7 +176,7 @@ mod tests {
     #[test]
     fn test_different_urls_different_ids() {
         let tree = build_tree("<html><body><h1>Test</h1></body></html>");
-        let resources = BTreeSet::new();
+        let resources = HashSet::new();
 
         let (_, id1) = compute_fingerprint("https://example.com/", &tree, &resources);
         let (_, id2) = compute_fingerprint("https://example.com/about", &tree, &resources);
@@ -224,7 +187,7 @@ mod tests {
     #[test]
     fn test_fragment_creates_different_id() {
         let tree = build_tree("<html><body><h1>Test</h1></body></html>");
-        let resources = BTreeSet::new();
+        let resources = HashSet::new();
 
         let (_, id1) = compute_fingerprint("https://example.com/#section1", &tree, &resources);
         let (_, id2) = compute_fingerprint("https://example.com/#section2", &tree, &resources);

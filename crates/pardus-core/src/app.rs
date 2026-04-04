@@ -60,9 +60,10 @@ fn chrome_default_headers() -> rquest::header::HeaderMap {
 pub fn build_http_client(config: &BrowserConfig) -> anyhow::Result<rquest::Client> {
     let mut client_builder = rquest::Client::builder()
         .emulation(Emulation::Chrome131)
-        .user_agent(&config.user_agent)
         .timeout(std::time::Duration::from_millis(config.timeout_ms as u64))
-        .default_headers(chrome_default_headers());
+        .default_headers(chrome_default_headers())
+        .user_agent(&config.user_agent)
+        .cert_verification(false); // BoringSSL doesn't load system certs; skip verify for headless use
 
     // Sandbox: disable cookie store for ephemeral sessions
     if !config.sandbox.ephemeral_session {
@@ -83,9 +84,9 @@ pub fn build_http_client(config: &BrowserConfig) -> anyhow::Result<rquest::Clien
                     // Rebuild without pinning since builder was moved
                     let mut new_builder = rquest::Client::builder()
                         .emulation(Emulation::Chrome131)
-                        .user_agent(&config.user_agent)
                         .timeout(std::time::Duration::from_millis(config.timeout_ms as u64))
-                        .default_headers(chrome_default_headers());
+                        .default_headers(chrome_default_headers())
+                        .user_agent(&config.user_agent);
                     if !config.sandbox.ephemeral_session {
                         new_builder = new_builder.cookie_store(true);
                     }

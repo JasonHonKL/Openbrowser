@@ -13,6 +13,7 @@ pub mod js;
 pub mod navigation;
 pub mod output;
 pub mod page;
+pub mod page_analysis;
 pub mod parser;
 #[cfg(feature = "screenshot")]
 pub mod screenshot;
@@ -36,6 +37,7 @@ pub use app::App;
 pub use browser::Browser;
 pub use config::{BrowserConfig, ProxyConfig, CspConfig, RetryConfig};
 pub use page::Page;
+pub use page::{RedirectHop, RedirectChain};
 pub use sandbox::{JsSandboxMode, SandboxPolicy};
 pub use page::PageSnapshot;
 pub use url_policy::UrlPolicy;

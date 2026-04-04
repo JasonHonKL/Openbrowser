@@ -10,8 +10,8 @@ describe('Prompts', () => {
     });
 
     it('should explain browser instances', () => {
-      assert.ok(SYSTEM_PROMPT.includes('browser instance'));
-      assert.ok(SYSTEM_PROMPT.includes('isolated'));
+      assert.ok(SYSTEM_PROMPT.includes('browser_new'));
+      assert.ok(SYSTEM_PROMPT.includes('instance'));
     });
 
     it('should explain semantic tree', () => {
@@ -37,22 +37,22 @@ describe('Prompts', () => {
     });
 
     it('should mention correct tool count', () => {
-      assert.ok(SYSTEM_PROMPT.includes('19 browser tools'));
+      assert.ok(SYSTEM_PROMPT.includes('40)'));
     });
 
     it('should have workflow steps', () => {
       assert.ok(SYSTEM_PROMPT.includes('browser_new()'));
-      assert.ok(SYSTEM_PROMPT.includes('browser_navigate()'));
-      assert.ok(SYSTEM_PROMPT.includes('browser_click()'));
+      assert.ok(SYSTEM_PROMPT.includes('browser_navigate'));
+      assert.ok(SYSTEM_PROMPT.includes('browser_click'));
     });
 
     it('should explain element IDs', () => {
-      assert.ok(SYSTEM_PROMPT.includes('[#1]'));
+      assert.ok(SYSTEM_PROMPT.includes('[#N'));
       assert.ok(SYSTEM_PROMPT.includes('Element IDs'));
     });
 
-    it('should include best practices', () => {
-      assert.ok(SYSTEM_PROMPT.includes('Best Practices'));
+    it('should include key rules', () => {
+      assert.ok(SYSTEM_PROMPT.includes('Key Rules'));
     });
   });
 

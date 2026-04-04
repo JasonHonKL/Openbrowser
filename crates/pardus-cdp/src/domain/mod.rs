@@ -103,7 +103,10 @@ impl DomainContext {
     /// !Send types (scraper::Html in Page) that cannot be held across await
     /// points in CDP handlers which must be Send.
     pub async fn navigate(&self, target_id: &str, url: &str) -> anyhow::Result<()> {
-        let page = pardus_core::Page::from_url(&self.app, url).await?;
+        let page = match pardus_core::Page::from_url_with_js(&self.app, url, 3000).await {
+            Ok(p) => p,
+            Err(_) => pardus_core::Page::from_url(&self.app, url).await?,
+        };
         let frame_tree_json = page.frame_tree.as_ref()
             .and_then(|ft| serde_json::to_string(ft).ok());
         let final_url = page.url.clone();
@@ -114,7 +117,7 @@ impl DomainContext {
             url: final_url,
             html: Some(html_str),
             title,
-            js_enabled: false,
+            js_enabled: true,
             frame_tree_json,
         });
         Ok(())

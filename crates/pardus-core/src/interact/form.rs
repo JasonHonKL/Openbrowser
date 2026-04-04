@@ -338,6 +338,7 @@ async fn submit_post_urlencoded(
         csp: None,
         frame_tree: None,
         cached_tree: None,
+        redirect_chain: None,
     })
 }
 
@@ -418,6 +419,7 @@ async fn submit_post_multipart(
         csp: None,
         frame_tree: None,
         cached_tree: None,
+        redirect_chain: None,
     })
 }
 

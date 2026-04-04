@@ -46,6 +46,23 @@ pub async fn run_with_config(
 
     let page = browser.current_page().ok_or_else(|| anyhow::anyhow!("no page loaded"))?;
 
+    // Show redirect chain info
+    if let Some(ref chain) = page.redirect_chain {
+        if !chain.hops.is_empty() {
+            let original = chain.original_url().unwrap_or(&page.url);
+            println!(
+                "       redirected {} -> {} ({} hop{})",
+                original,
+                page.url,
+                chain.hops.len(),
+                if chain.hops.len() == 1 { "" } else { "s" }
+            );
+            for hop in &chain.hops {
+                println!("         {} {} -> {}", hop.status, hop.from, hop.to);
+            }
+        }
+    }
+
     if network_log {
         page.discover_subresources(&net_log);
         pardus_core::Page::fetch_subresources(&http_client, &net_log).await;
@@ -130,6 +147,7 @@ pub async fn run_with_config(
                 &tree,
                 nav_graph.as_ref(),
                 network.as_ref(),
+                page.redirect_chain.as_ref(),
             )?;
             println!("{}", json);
             return Ok(());

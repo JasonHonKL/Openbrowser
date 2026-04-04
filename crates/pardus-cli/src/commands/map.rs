@@ -31,10 +31,11 @@ pub async fn run_with_config(
         max_depth: depth,
         max_pages,
         delay_ms: delay,
-        verify_transitions: !skip_verify,
         discover_pagination: pagination,
         discover_hash_nav: hash_nav,
         discover_forms: false,
+        store_full_trees: true,
+        concurrency: 4,
         proxy: proxy_config,
     };
 
