@@ -28,7 +28,7 @@ Pages are returned as semantic trees with element IDs in brackets:
 - Use browser_get_action_plan when unsure what to do next
 - Scroll with browser_scroll(direction) to see more content — scroll returns the updated tree
 
-Tools (40): browser_new, browser_navigate, browser_click, browser_fill, browser_submit, browser_scroll, browser_close, browser_list, browser_get_state, browser_get_action_plan, browser_auto_fill, browser_wait, browser_get/set/delete_cookies, browser_get/set/delete/clear_storage, browser_extract_text, browser_extract_links, browser_find, browser_extract_table, browser_extract_metadata, browser_screenshot, browser_select, browser_press_key, browser_hover, browser_tab_new/switch/close, browser_download, browser_upload, browser_pdf_extract, browser_feed_parse, browser_network_block, browser_network_log, browser_iframe_enter/exit, browser_diff.`;
+ Tools (42): browser_new, browser_navigate, browser_click, browser_fill, browser_submit, browser_scroll, browser_close, browser_list, browser_get_state, browser_get_action_plan, browser_auto_fill, browser_wait, browser_get/set/delete_cookies, browser_get/set/delete/clear_storage, browser_extract_text, browser_extract_links, browser_find, browser_extract_table, browser_extract_metadata, browser_screenshot, browser_select, browser_press_key, browser_hover, browser_tab_new/switch/close, browser_download, browser_upload, browser_pdf_extract, browser_feed_parse, browser_network_block, browser_network_log, browser_iframe_enter/exit, browser_diff, browser_oauth_set_provider/start/complete/status.`;
 
 /** Extended prompt — used for the first few rounds, then compacted */
 export const EXTENDED_PROMPT = `

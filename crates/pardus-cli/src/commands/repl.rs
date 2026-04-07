@@ -1,13 +1,24 @@
 use anyhow::Result;
-use pardus_core::{Browser, BrowserConfig, FormState, ProxyConfig, ScrollDirection};
-use pardus_core::intercept::builtins::{BlockingInterceptor, RedirectInterceptor, HeaderModifierInterceptor, MockResponseInterceptor};
-use pardus_core::intercept::rules::InterceptorRule;
-use rustyline::error::ReadlineError;
-use rustyline::Editor;
+use pardus_core::{
+    Browser, BrowserConfig, FormState, ProxyConfig, ScrollDirection,
+    intercept::{
+        builtins::{
+            BlockingInterceptor, HeaderModifierInterceptor, MockResponseInterceptor,
+            RedirectInterceptor,
+        },
+        rules::InterceptorRule,
+    },
+};
+use rustyline::{Editor, error::ReadlineError};
 
 use crate::OutputFormatArg;
 
-pub async fn run_with_config(js: bool, format: OutputFormatArg, wait_ms: u32, proxy_config: ProxyConfig) -> Result<()> {
+pub async fn run_with_config(
+    js: bool,
+    format: OutputFormatArg,
+    wait_ms: u32,
+    proxy_config: ProxyConfig,
+) -> Result<()> {
     let mut browser_config = BrowserConfig::default();
     browser_config.proxy = proxy_config;
     let mut browser = Browser::new(browser_config)?;
@@ -70,26 +81,20 @@ pub async fn run_with_config(js: bool, format: OutputFormatArg, wait_ms: u32, pr
                     Err(e) => eprintln!("Error: {}", e),
                 }
             }
-            "reload" => {
-                match browser.reload().await {
-                    Ok(_) => print_tree(&browser, &format),
-                    Err(e) => eprintln!("Error: {}", e),
-                }
-            }
-            "back" => {
-                match browser.go_back().await {
-                    Ok(Some(_)) => print_tree(&browser, &format),
-                    Ok(None) => println!("Already at the beginning of history"),
-                    Err(e) => eprintln!("Error: {}", e),
-                }
-            }
-            "forward" => {
-                match browser.go_forward().await {
-                    Ok(Some(_)) => print_tree(&browser, &format),
-                    Ok(None) => println!("Already at the end of history"),
-                    Err(e) => eprintln!("Error: {}", e),
-                }
-            }
+            "reload" => match browser.reload().await {
+                Ok(_) => print_tree(&browser, &format),
+                Err(e) => eprintln!("Error: {}", e),
+            },
+            "back" => match browser.go_back().await {
+                Ok(Some(_)) => print_tree(&browser, &format),
+                Ok(None) => println!("Already at the beginning of history"),
+                Err(e) => eprintln!("Error: {}", e),
+            },
+            "forward" => match browser.go_forward().await {
+                Ok(Some(_)) => print_tree(&browser, &format),
+                Ok(None) => println!("Already at the end of history"),
+                Err(e) => eprintln!("Error: {}", e),
+            },
 
             // Interactions
             "click" => {
@@ -188,14 +193,20 @@ pub async fn run_with_config(js: bool, format: OutputFormatArg, wait_ms: u32, pr
                 let init = tokens.get(3).cloned();
                 if let Some(id_str) = selector.strip_prefix('#') {
                     match id_str.parse::<usize>() {
-                        Ok(id) => match browser.dispatch_event_by_id(id, event_type, init.as_deref()).await {
+                        Ok(id) => match browser
+                            .dispatch_event_by_id(id, event_type, init.as_deref())
+                            .await
+                        {
                             Ok(result) => print_interaction_result(&result, &format),
                             Err(e) => eprintln!("Error: {}", e),
                         },
                         Err(_) => eprintln!("Invalid element ID: {}", selector),
                     }
                 } else {
-                    match browser.dispatch_event(selector, event_type, init.as_deref()).await {
+                    match browser
+                        .dispatch_event(selector, event_type, init.as_deref())
+                        .await
+                    {
                         Ok(result) => print_interaction_result(&result, &format),
                         Err(e) => eprintln!("Error: {}", e),
                     }
@@ -239,18 +250,22 @@ pub async fn run_with_config(js: bool, format: OutputFormatArg, wait_ms: u32, pr
                 };
 
                 let result = if let Some(selector) = &element_selector {
-                    browser.capture_element_screenshot(&url, selector, &opts).await
+                    browser
+                        .capture_element_screenshot(&url, selector, &opts)
+                        .await
                 } else {
                     browser.capture_screenshot(&url, &opts).await
                 };
 
                 match result {
-                    Ok(bytes) => {
-                        match std::fs::write(output_path, &bytes) {
-                            Ok(_) => println!("Screenshot saved to {} ({} bytes)", output_path, bytes.len()),
-                            Err(e) => eprintln!("Failed to write screenshot: {}", e),
-                        }
-                    }
+                    Ok(bytes) => match std::fs::write(output_path, &bytes) {
+                        Ok(_) => println!(
+                            "Screenshot saved to {} ({} bytes)",
+                            output_path,
+                            bytes.len()
+                        ),
+                        Err(e) => eprintln!("Failed to write screenshot: {}", e),
+                    },
                     Err(e) => eprintln!("Screenshot failed: {}", e),
                 }
             }
@@ -265,21 +280,19 @@ pub async fn run_with_config(js: bool, format: OutputFormatArg, wait_ms: u32, pr
             }
 
             // Settings
-            "js" => {
-                match tokens.get(1).map(|s| s.as_str()) {
-                    Some("on") | Some("true") | Some("1") => {
-                        js_enabled = true;
-                        browser.set_js_enabled(true, wait_ms);
-                        println!("JS enabled");
-                    }
-                    Some("off") | Some("false") | Some("0") => {
-                        js_enabled = false;
-                        browser.set_js_enabled(false, wait_ms);
-                        println!("JS disabled");
-                    }
-                    _ => println!("JS is currently {}", if js_enabled { "on" } else { "off" }),
+            "js" => match tokens.get(1).map(|s| s.as_str()) {
+                Some("on") | Some("true") | Some("1") => {
+                    js_enabled = true;
+                    browser.set_js_enabled(true, wait_ms);
+                    println!("JS enabled");
                 }
-            }
+                Some("off") | Some("false") | Some("0") => {
+                    js_enabled = false;
+                    browser.set_js_enabled(false, wait_ms);
+                    println!("JS disabled");
+                }
+                _ => println!("JS is currently {}", if js_enabled { "on" } else { "off" }),
+            },
             "format" => {
                 match tokens.get(1).map(|s| s.as_str()) {
                     Some("md") => format = OutputFormatArg::Md,
@@ -316,7 +329,10 @@ pub async fn run_with_config(js: bool, format: OutputFormatArg, wait_ms: u32, pr
             }
 
             other => {
-                eprintln!("Unknown command: {}. Type `help` for available commands.", other);
+                eprintln!(
+                    "Unknown command: {}. Type `help` for available commands.",
+                    other
+                );
             }
         }
     }
@@ -325,12 +341,7 @@ pub async fn run_with_config(js: bool, format: OutputFormatArg, wait_ms: u32, pr
     Ok(())
 }
 
-async fn navigate(
-    browser: &mut Browser,
-    url: &str,
-    js: bool,
-    wait_ms: u32,
-) -> Result<()> {
+async fn navigate(browser: &mut Browser, url: &str, js: bool, wait_ms: u32) -> Result<()> {
     if js {
         browser.navigate_with_js(url, wait_ms).await?;
     } else {
@@ -384,17 +395,11 @@ fn print_tree(browser: &Browser, format: &OutputFormatArg) {
     }
     println!(
         "  {} landmarks, {} links, {} headings, {} actions",
-        tree.stats.landmarks,
-        tree.stats.links,
-        tree.stats.headings,
-        tree.stats.actions,
+        tree.stats.landmarks, tree.stats.links, tree.stats.headings, tree.stats.actions,
     );
 }
 
-fn print_interaction_result(
-    result: &pardus_core::InteractionResult,
-    format: &OutputFormatArg,
-) {
+fn print_interaction_result(result: &pardus_core::InteractionResult, format: &OutputFormatArg) {
     use pardus_core::InteractionResult;
     match result {
         InteractionResult::Navigated(new_page) => {
@@ -450,7 +455,10 @@ fn print_interaction_result(
                 eprintln!("Wait timeout: {} not found", selector);
             }
         }
-        InteractionResult::Scrolled { url, page: new_page } => {
+        InteractionResult::Scrolled {
+            url,
+            page: new_page,
+        } => {
             eprintln!("Scrolled to: {}", url);
             let tree = new_page.semantic_tree();
             match format {
@@ -480,7 +488,10 @@ fn print_interaction_result(
                 }
             }
         }
-        InteractionResult::EventDispatched { selector, event_type } => {
+        InteractionResult::EventDispatched {
+            selector,
+            event_type,
+        } => {
             println!("Dispatched '{}' on {}", event_type, selector);
         }
         InteractionResult::FilesSet { selector, count } => {
@@ -555,11 +566,7 @@ async fn handle_tab(
                     let tab_id = pardus_core::TabId::from_u64(id);
                     match browser.switch_to(tab_id).await {
                         Ok(tab) => {
-                            println!(
-                                "Switched to tab {}: {}",
-                                tab.id,
-                                tab.url
-                            );
+                            println!("Switched to tab {}: {}", tab.id, tab.url);
                             print_tree(browser, format);
                         }
                         Err(e) => eprintln!("Error: {}", e),
@@ -592,20 +599,21 @@ async fn handle_tab(
                 eprintln!("No tab to close");
             }
         }
-        "info" => {
-            match browser.active_tab() {
-                Some(tab) => {
-                    println!("Active Tab [{}]:", tab.id);
-                    println!("  URL: {}", tab.url);
-                    println!("  Title: {}", tab.title.as_deref().unwrap_or("(none)"));
-                    println!("  State: {:?}", tab.state);
-                    println!("  History: {}/{}", tab.history_index + 1, tab.history.len());
-                }
-                None => println!("No active tab"),
+        "info" => match browser.active_tab() {
+            Some(tab) => {
+                println!("Active Tab [{}]:", tab.id);
+                println!("  URL: {}", tab.url);
+                println!("  Title: {}", tab.title.as_deref().unwrap_or("(none)"));
+                println!("  State: {:?}", tab.state);
+                println!("  History: {}/{}", tab.history_index + 1, tab.history.len());
             }
-        }
+            None => println!("No active tab"),
+        },
         other => {
-            eprintln!("Unknown tab command: {}. Use: list, open, switch, close, info", other);
+            eprintln!(
+                "Unknown tab command: {}. Use: list, open, switch, close, info",
+                other
+            );
         }
     }
 }
@@ -637,7 +645,9 @@ fn split_tokens(input: &str) -> Vec<String> {
 
 fn handle_intercept(browser: &mut Browser, args: &[String]) {
     if args.is_empty() {
-        eprintln!("Usage: intercept <block|redirect|header|remove-header|mock|list|clear|domain> ...");
+        eprintln!(
+            "Usage: intercept <block|redirect|header|remove-header|mock|list|clear|domain> ..."
+        );
         return;
     }
 
@@ -650,7 +660,9 @@ fn handle_intercept(browser: &mut Browser, args: &[String]) {
             }
             let pattern = &args[1];
             let rule = parse_pattern_to_rule(pattern);
-            browser.interceptors.add(Box::new(BlockingInterceptor::new(rule)));
+            browser
+                .interceptors()
+                .add(Box::new(BlockingInterceptor::new(rule)));
             println!("Added block interceptor for: {}", pattern);
         }
         "redirect" => {
@@ -661,7 +673,9 @@ fn handle_intercept(browser: &mut Browser, args: &[String]) {
             let pattern = &args[1];
             let target = &args[2];
             let rule = parse_pattern_to_rule(pattern);
-            browser.interceptors.add(Box::new(RedirectInterceptor::new(rule, target.clone())));
+            browser
+                .interceptors()
+                .add(Box::new(RedirectInterceptor::new(rule, target.clone())));
             println!("Added redirect interceptor: {} -> {}", pattern, target);
         }
         "header" => {
@@ -679,9 +693,9 @@ fn handle_intercept(browser: &mut Browser, args: &[String]) {
                 }
             }
             if !headers.is_empty() {
-                browser.interceptors.add(Box::new(
-                    HeaderModifierInterceptor::new(None, headers),
-                ));
+                browser
+                    .interceptors()
+                    .add(Box::new(HeaderModifierInterceptor::new(None, headers)));
             }
         }
         "remove-header" => {
@@ -693,8 +707,9 @@ fn handle_intercept(browser: &mut Browser, args: &[String]) {
             for name in &headers {
                 println!("Will remove header: {}", name);
             }
-            browser.interceptors.add(Box::new(
-                HeaderModifierInterceptor::new(None, std::collections::HashMap::new()).with_removal(headers),
+            browser.interceptors_mut().add(Box::new(
+                HeaderModifierInterceptor::new(None, std::collections::HashMap::new())
+                    .with_removal(headers),
             ));
         }
         "mock" => {
@@ -712,10 +727,15 @@ fn handle_intercept(browser: &mut Browser, args: &[String]) {
             };
             let body = args[3..].join(" ");
             let rule = parse_pattern_to_rule(pattern);
-            browser.interceptors.add(Box::new(
-                MockResponseInterceptor::text(rule, status, &body),
-            ));
-            println!("Added mock interceptor: {} -> {} {}", pattern, status, &body[..body.len().min(80)]);
+            browser
+                .interceptors_mut()
+                .add(Box::new(MockResponseInterceptor::text(rule, status, &body)));
+            println!(
+                "Added mock interceptor: {} -> {} {}",
+                pattern,
+                status,
+                &body[..body.len().min(80)]
+            );
         }
         "domain" => {
             if args.len() < 2 {
@@ -725,12 +745,14 @@ fn handle_intercept(browser: &mut Browser, args: &[String]) {
             }
             for domain in &args[1..] {
                 let rule = InterceptorRule::Domain(domain.clone());
-                browser.interceptors.add(Box::new(BlockingInterceptor::new(rule)));
+                browser
+                    .interceptors_mut()
+                    .add(Box::new(BlockingInterceptor::new(rule)));
                 println!("Added domain block: {}", domain);
             }
         }
         "list" => {
-            let count = browser.interceptors.len();
+            let count = browser.interceptors().len();
             if count == 0 {
                 println!("No interceptors active");
             } else {
@@ -739,7 +761,7 @@ fn handle_intercept(browser: &mut Browser, args: &[String]) {
         }
         "clear" => {
             println!("Clearing all interceptors");
-            browser.interceptors = pardus_core::InterceptorManager::new();
+            *browser.interceptors_mut() = pardus_core::InterceptorManager::new();
         }
         other => {
             eprintln!("Unknown intercept command: {}", other);
@@ -751,16 +773,16 @@ fn handle_intercept(browser: &mut Browser, args: &[String]) {
 fn parse_pattern_to_rule(pattern: &str) -> InterceptorRule {
     if pattern.contains("://") || pattern.starts_with("*.") {
         if pattern.contains('*') || pattern.contains('?') {
-            InterceptorRule::UrlGlob(pattern.to_string())
+            InterceptorRule::url_glob(pattern)
         } else {
             InterceptorRule::Domain(pattern.to_string())
         }
     } else if pattern.starts_with('/') {
         InterceptorRule::PathPrefix(pattern.to_string())
     } else if pattern.contains('*') || pattern.contains('?') {
-        InterceptorRule::UrlGlob(pattern.to_string())
+        InterceptorRule::url_glob(pattern)
     } else {
-        InterceptorRule::UrlGlob(format!("*{}*", pattern))
+        InterceptorRule::url_glob(format!("*{}*", pattern))
     }
 }
 
@@ -835,14 +857,18 @@ fn handle_cookies(browser: &Browser, args: &[String]) {
             }
             // If a URL filter is given, show only matching cookies
             let filtered = if let Some(url) = args.get(1) {
-                cookies.into_iter().filter(|c| {
-                    url.contains(&c.domain) || c.domain.contains(url)
-                }).collect::<Vec<_>>()
+                cookies
+                    .into_iter()
+                    .filter(|c| url.contains(&c.domain) || c.domain.contains(url))
+                    .collect::<Vec<_>>()
             } else {
                 cookies
             };
 
-            println!("{:<5} {:<30} {:<40} {:<10} {:<8}", "Secure", "Name", "Domain", "Path", "Httponly");
+            println!(
+                "{:<5} {:<30} {:<40} {:<10} {:<8}",
+                "Secure", "Name", "Domain", "Path", "Httponly"
+            );
             for c in &filtered {
                 println!(
                     "{:<5} {:<30} {:<40} {:<10} {:<8}",
@@ -872,7 +898,10 @@ fn handle_cookies(browser: &Browser, args: &[String]) {
             let domain = args.get(2).map(|s| s.as_str()).unwrap_or("example.com");
             let path = args.get(3).map(|s| s.as_str()).unwrap_or("/");
             browser.set_cookie(name, value, domain, path);
-            println!("Cookie set: {}={} (domain={}, path={})", name, value, domain, path);
+            println!(
+                "Cookie set: {}={} (domain={}, path={})",
+                name, value, domain, path
+            );
         }
 
         Some("delete") | Some("remove") => {
@@ -896,7 +925,10 @@ fn handle_cookies(browser: &Browser, args: &[String]) {
         }
 
         _ => {
-            eprintln!("Usage: cookies list [url] | set <n>=<v> [domain] [path] | delete <name> [domain] [path] | clear");
+            eprintln!(
+                "Usage: cookies list [url] | set <n>=<v> [domain] [path] | delete <name> [domain] \
+                 [path] | clear"
+            );
         }
     }
 }
@@ -908,7 +940,9 @@ fn handle_network(browser: &Browser, args: &[String]) {
 
     match subcmd {
         "list" | "ls" | "table" => {
-            let log = browser.network_log.lock()
+            let log = browser
+                .network_log()
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if log.records.is_empty() {
                 println!("No network requests captured yet. Navigate to a page first.");
@@ -934,17 +968,26 @@ fn handle_network(browser: &Browser, args: &[String]) {
                     return;
                 }
             };
-            let log = browser.network_log.lock()
+            let log = browser
+                .network_log()
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let record = match log.records.iter().find(|r| r.id == id) {
                 Some(r) => r,
                 None => {
-                    eprintln!("Request #{} not found. {} requests captured.", id, log.records.len());
+                    eprintln!(
+                        "Request #{} not found. {} requests captured.",
+                        id,
+                        log.records.len()
+                    );
                     return;
                 }
             };
             println!("  #{} {} {}", record.id, record.method, record.url);
-            println!("  Type: {} | Initiator: {}", record.resource_type, record.initiator);
+            println!(
+                "  Type: {} | Initiator: {}",
+                record.resource_type, record.initiator
+            );
             println!("  Description: {}", record.description);
             if let Some(status) = record.status {
                 let status_text = record.status_text.as_deref().unwrap_or("");
@@ -989,9 +1032,13 @@ fn handle_network(browser: &Browser, args: &[String]) {
         }
 
         "failed" | "errors" => {
-            let log = browser.network_log.lock()
+            let log = browser
+                .network_log()
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            let failed: Vec<_> = log.records.iter()
+            let failed: Vec<_> = log
+                .records
+                .iter()
                 .filter(|r| r.error.is_some() || r.status.is_some_and(|s| s >= 400))
                 .collect();
             if failed.is_empty() {
@@ -1000,17 +1047,29 @@ fn handle_network(browser: &Browser, args: &[String]) {
             }
             println!("  Failed requests ({}):", failed.len());
             println!();
-            println!("  {:>2}  {:<7}  {:>6}  {:<50}  {}", "#", "Method", "Status", "URL", "Error");
+            println!(
+                "  {:>2}  {:<7}  {:>6}  {:<50}  {}",
+                "#", "Method", "Status", "URL", "Error"
+            );
             for r in &failed {
                 let status = r.status.map_or("—".to_string(), |s| s.to_string());
-                let url = if r.url.len() > 50 { format!("{}…", &r.url[..47]) } else { r.url.clone() };
+                let url = if r.url.len() > 50 {
+                    format!("{}…", &r.url[..47])
+                } else {
+                    r.url.clone()
+                };
                 let error = r.error.as_deref().unwrap_or("");
-                println!("  {:>2}  {:<7}  {:>6}  {:<50}  {}", r.id, r.method, status, url, error);
+                println!(
+                    "  {:>2}  {:<7}  {:>6}  {:<50}  {}",
+                    r.id, r.method, status, url, error
+                );
             }
         }
 
         "stats" => {
-            let log = browser.network_log.lock()
+            let log = browser
+                .network_log()
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if log.records.is_empty() {
                 println!("No network requests captured yet.");
@@ -1018,12 +1077,17 @@ fn handle_network(browser: &Browser, args: &[String]) {
             }
             println!("  Network Stats:");
             println!("    Total requests: {}", log.total_requests());
-            println!("    Total bytes:    {} ({})", log.total_bytes(), formatter::format_bytes(log.total_bytes()));
+            println!(
+                "    Total bytes:    {} ({})",
+                log.total_bytes(),
+                formatter::format_bytes(log.total_bytes())
+            );
             println!("    Max latency:    {}ms", log.total_time_ms());
             println!("    Failed:         {}", log.failed_count());
 
             // Breakdown by resource type
-            let mut type_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut type_counts: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
             for r in &log.records {
                 *type_counts.entry(r.resource_type.to_string()).or_insert(0) += 1;
             }
@@ -1036,7 +1100,9 @@ fn handle_network(browser: &Browser, args: &[String]) {
         }
 
         "json" => {
-            let log = browser.network_log.lock()
+            let log = browser
+                .network_log()
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if log.records.is_empty() {
                 println!("No network requests captured yet.");
@@ -1055,7 +1121,9 @@ fn handle_network(browser: &Browser, args: &[String]) {
                 return;
             }
             let path = &args[1];
-            let log = browser.network_log.lock()
+            let log = browser
+                .network_log()
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if log.records.is_empty() {
                 println!("No network requests to export.");
@@ -1064,7 +1132,11 @@ fn handle_network(browser: &Browser, args: &[String]) {
             let har = pardus_debug::har::HarFile::from_network_log(&log);
             match serde_json::to_string_pretty(&har) {
                 Ok(json) => match std::fs::write(path, &json) {
-                    Ok(_) => println!("HAR exported to {} ({} entries)", path, har.log.entries.len()),
+                    Ok(_) => println!(
+                        "HAR exported to {} ({} entries)",
+                        path,
+                        har.log.entries.len()
+                    ),
                     Err(e) => eprintln!("Failed to write HAR file: {}", e),
                 },
                 Err(e) => eprintln!("Failed to serialize HAR: {}", e),
@@ -1072,7 +1144,9 @@ fn handle_network(browser: &Browser, args: &[String]) {
         }
 
         "clear" => {
-            let mut log = browser.network_log.lock()
+            let mut log = browser
+                .network_log()
+                .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let count = log.records.len();
             log.records.clear();
@@ -1080,21 +1154,25 @@ fn handle_network(browser: &Browser, args: &[String]) {
         }
 
         other => {
-            eprintln!("Unknown network command: {}. Use: list, show, failed, stats, json, har, clear", other);
+            eprintln!(
+                "Unknown network command: {}. Use: list, show, failed, stats, json, har, clear",
+                other
+            );
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use pardus_debug::{NetworkLog, NetworkRecord, ResourceType, Initiator};
     use std::sync::{Arc, Mutex};
+
+    use pardus_debug::{Initiator, NetworkLog, NetworkRecord, ResourceType};
 
     /// Build a Browser with a pre-populated network log for testing.
     ///
     /// We avoid `Browser::new()` because it creates a real HTTP client that
     /// may have TLS dependencies. Instead we exercise the public API surface
-    /// that `handle_network` actually touches: only `browser.network_log`.
+    /// that `handle_network` actually touches: only `browser.network_log()`.
     struct TestBrowser {
         network_log: Arc<Mutex<NetworkLog>>,
     }
@@ -1106,7 +1184,14 @@ mod tests {
             }
         }
 
-        fn add_record(&self, id: usize, url: &str, status: Option<u16>, resource_type: ResourceType, error: Option<&str>) {
+        fn add_record(
+            &self,
+            id: usize,
+            url: &str,
+            status: Option<u16>,
+            resource_type: ResourceType,
+            error: Option<&str>,
+        ) {
             let mut log = self.network_log.lock().unwrap();
             let mut r = NetworkRecord::fetched(
                 id,
@@ -1119,21 +1204,25 @@ mod tests {
             r.status = status;
             r.error = error.map(|s| s.to_string());
             if let Some(s) = status {
-                r.status_text = Some(if s < 400 { "OK".to_string() } else { "Error".to_string() });
+                r.status_text = Some(if s < 400 {
+                    "OK".to_string()
+                } else {
+                    "Error".to_string()
+                });
             }
             r.body_size = Some(1024 * id);
             r.timing_ms = Some(50 * id as u128);
             r.content_type = Some("text/html".to_string());
             r.http_version = Some("HTTP/2".to_string());
             r.started_at = Some("2026-01-01T00:00:00.000Z".to_string());
-            r.request_headers.push(("accept".to_string(), "text/html".to_string()));
-            r.response_headers.push(("content-type".to_string(), "text/html".to_string()));
+            r.request_headers
+                .push(("accept".to_string(), "text/html".to_string()));
+            r.response_headers
+                .push(("content-type".to_string(), "text/html".to_string()));
             log.push(r);
         }
 
-        fn log_record_count(&self) -> usize {
-            self.network_log.lock().unwrap().records.len()
-        }
+        fn log_record_count(&self) -> usize { self.network_log.lock().unwrap().records.len() }
     }
 
     /// We need a thin adapter because `handle_network` expects `&Browser`.
@@ -1141,10 +1230,34 @@ mod tests {
     /// but takes our `TestBrowser` instead. This tests the actual branching
     /// logic, filtering, and data access paths.
     fn populate_sample_log(browser: &TestBrowser) {
-        browser.add_record(1, "https://example.com/", Some(200), ResourceType::Document, None);
-        browser.add_record(2, "https://example.com/style.css", Some(200), ResourceType::Stylesheet, None);
-        browser.add_record(3, "https://example.com/app.js", Some(404), ResourceType::Script, None);
-        browser.add_record(4, "https://example.com/api/data", Some(500), ResourceType::Fetch, Some("internal error"));
+        browser.add_record(
+            1,
+            "https://example.com/",
+            Some(200),
+            ResourceType::Document,
+            None,
+        );
+        browser.add_record(
+            2,
+            "https://example.com/style.css",
+            Some(200),
+            ResourceType::Stylesheet,
+            None,
+        );
+        browser.add_record(
+            3,
+            "https://example.com/app.js",
+            Some(404),
+            ResourceType::Script,
+            None,
+        );
+        browser.add_record(
+            4,
+            "https://example.com/api/data",
+            Some(500),
+            ResourceType::Fetch,
+            Some("internal error"),
+        );
     }
 
     // ── list subcommand ────────────────────────────────────────────────
@@ -1154,7 +1267,7 @@ mod tests {
         let browser = TestBrowser::new();
         populate_sample_log(&browser);
 
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let table = pardus_debug::formatter::format_table(&log);
         assert!(table.contains("4 requests"));
         assert!(table.contains("example.com"));
@@ -1167,7 +1280,7 @@ mod tests {
     #[test]
     fn test_network_list_empty() {
         let browser = TestBrowser::new();
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let table = pardus_debug::formatter::format_table(&log);
         assert!(table.is_empty());
     }
@@ -1179,7 +1292,7 @@ mod tests {
         let browser = TestBrowser::new();
         populate_sample_log(&browser);
 
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let record = log.records.iter().find(|r| r.id == 1).unwrap();
         assert_eq!(record.url, "https://example.com/");
         assert_eq!(record.status, Some(200));
@@ -1196,7 +1309,7 @@ mod tests {
         let browser = TestBrowser::new();
         populate_sample_log(&browser);
 
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let found = log.records.iter().find(|r| r.id == 999);
         assert!(found.is_none());
     }
@@ -1208,8 +1321,10 @@ mod tests {
         let browser = TestBrowser::new();
         populate_sample_log(&browser);
 
-        let log = browser.network_log.lock().unwrap();
-        let failed: Vec<_> = log.records.iter()
+        let log = browser.network_log().lock().unwrap();
+        let failed: Vec<_> = log
+            .records
+            .iter()
             .filter(|r| r.error.is_some() || r.status.is_some_and(|s| s >= 400))
             .collect();
 
@@ -1221,10 +1336,18 @@ mod tests {
     #[test]
     fn test_network_failed_empty_when_all_ok() {
         let browser = TestBrowser::new();
-        browser.add_record(1, "https://ok.com/", Some(200), ResourceType::Document, None);
+        browser.add_record(
+            1,
+            "https://ok.com/",
+            Some(200),
+            ResourceType::Document,
+            None,
+        );
 
-        let log = browser.network_log.lock().unwrap();
-        let failed: Vec<_> = log.records.iter()
+        let log = browser.network_log().lock().unwrap();
+        let failed: Vec<_> = log
+            .records
+            .iter()
             .filter(|r| r.error.is_some() || r.status.is_some_and(|s| s >= 400))
             .collect();
         assert!(failed.is_empty());
@@ -1237,13 +1360,14 @@ mod tests {
         let browser = TestBrowser::new();
         populate_sample_log(&browser);
 
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         assert_eq!(log.total_requests(), 4);
         assert_eq!(log.total_bytes(), 1024 * (1 + 2 + 3 + 4)); // 10240
         assert_eq!(log.failed_count(), 2);
 
         // Type breakdown
-        let mut type_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut type_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for r in &log.records {
             *type_counts.entry(r.resource_type.to_string()).or_insert(0) += 1;
         }
@@ -1253,7 +1377,7 @@ mod tests {
     #[test]
     fn test_network_stats_empty() {
         let browser = TestBrowser::new();
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         assert_eq!(log.total_requests(), 0);
         assert_eq!(log.total_bytes(), 0);
         assert_eq!(log.failed_count(), 0);
@@ -1266,22 +1390,28 @@ mod tests {
         let browser = TestBrowser::new();
         populate_sample_log(&browser);
 
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let json_data = pardus_debug::formatter::NetworkLogJson::from_log(&log);
         let json = serde_json::to_string_pretty(&json_data).unwrap();
 
         // Verify key fields are present
-        assert!(json.contains("\"total_requests\": 4") || json.contains("\"total_requests\":4"),
-            "JSON should contain total_requests count. Got: {}", json);
-        assert!(json.contains("\"failed\": 2") || json.contains("\"failed\":2"),
-            "JSON should contain failed count. Got: {}", json);
+        assert!(
+            json.contains("\"total_requests\": 4") || json.contains("\"total_requests\":4"),
+            "JSON should contain total_requests count. Got: {}",
+            json
+        );
+        assert!(
+            json.contains("\"failed\": 2") || json.contains("\"failed\":2"),
+            "JSON should contain failed count. Got: {}",
+            json
+        );
         assert!(json.contains("example.com"));
     }
 
     #[test]
     fn test_network_json_empty_log() {
         let browser = TestBrowser::new();
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let json_data = pardus_debug::formatter::NetworkLogJson::from_log(&log);
         assert_eq!(json_data.total_requests, 0);
         assert!(json_data.requests.is_empty());
@@ -1294,7 +1424,7 @@ mod tests {
         let browser = TestBrowser::new();
         populate_sample_log(&browser);
 
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let har = pardus_debug::har::HarFile::from_network_log(&log);
         assert_eq!(har.log.entries.len(), 4);
         assert_eq!(har.log.version, "1.2");
@@ -1309,7 +1439,7 @@ mod tests {
         let browser = TestBrowser::new();
         populate_sample_log(&browser);
 
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let har = pardus_debug::har::HarFile::from_network_log(&log);
         let json = serde_json::to_string_pretty(&har).unwrap();
 
@@ -1333,7 +1463,7 @@ mod tests {
         assert_eq!(browser.log_record_count(), 4);
 
         {
-            let mut log = browser.network_log.lock().unwrap();
+            let mut log = browser.network_log().lock().unwrap();
             let count = log.records.len();
             log.records.clear();
             assert_eq!(count, 4);
@@ -1347,7 +1477,7 @@ mod tests {
         let browser = TestBrowser::new();
         assert_eq!(browser.log_record_count(), 0);
 
-        let mut log = browser.network_log.lock().unwrap();
+        let mut log = browser.network_log().lock().unwrap();
         let count = log.records.len();
         log.records.clear();
         assert_eq!(count, 0);
@@ -1359,7 +1489,7 @@ mod tests {
     fn test_record_with_redirect_and_cache() {
         let browser = TestBrowser::new();
         {
-            let mut log = browser.network_log.lock().unwrap();
+            let mut log = browser.network_log().lock().unwrap();
             let mut r = NetworkRecord::fetched(
                 10,
                 "GET".to_string(),
@@ -1375,7 +1505,7 @@ mod tests {
             log.push(r);
         }
 
-        let log = browser.network_log.lock().unwrap();
+        let log = browser.network_log().lock().unwrap();
         let r = log.records.iter().find(|r| r.id == 10).unwrap();
         assert_eq!(r.status, Some(301));
         assert_eq!(r.redirect_url.as_deref(), Some("https://new.com/page"));

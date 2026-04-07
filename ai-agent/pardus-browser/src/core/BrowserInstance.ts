@@ -178,6 +178,10 @@ export class BrowserInstance extends EventEmitter {
 
       this.ws.on('close', () => {
         this.connected = false;
+        for (const [id, pending] of this.pendingRequests) {
+          pending.reject(new Error('WebSocket connection closed'));
+          this.pendingRequests.delete(id);
+        }
         this.emit('disconnected');
         this.attemptReconnect();
       });
@@ -261,7 +265,11 @@ export class BrowserInstance extends EventEmitter {
     }
   }
 
-  private sendCommand(method: string, params?: Record<string, unknown>, timeout?: number): Promise<unknown> {
+  public sendCdpCommand(method: string, params?: Record<string, unknown>, timeout?: number): Promise<unknown> {
+    return this.sendCommand(method, params, timeout);
+  }
+
+  sendCommand(method: string, params?: Record<string, unknown>, timeout?: number): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(new Error('WebSocket not connected'));
@@ -847,8 +855,11 @@ export class BrowserInstance extends EventEmitter {
 
   async extractText(selector?: string): Promise<BrowserExtractTextResult> {
     try {
-      const scopeExpr = selector
-        ? `document.querySelector("${selector.replace(/"/g, '\\"')}")`
+      const escapedSelector = selector
+        ? JSON.stringify(selector)
+        : undefined;
+      const scopeExpr = escapedSelector
+        ? `document.querySelector(${escapedSelector})`
         : 'document.body';
 
       const result = await this.sendCommand(
@@ -856,7 +867,7 @@ export class BrowserInstance extends EventEmitter {
         {
           expression: `(function() {
             const root = ${scopeExpr};
-            if (!root) return { error: "Element not found: ${selector?.replace(/"/g, '\\"')}" };
+            if (!root) return { error: "Element not found" };
             const clone = root.cloneNode(true);
             const remove = ['script','style','noscript','svg','iframe','nav','footer','header','aside','[role="navigation"]','[role="banner"]','[role="contentinfo"]','[role="complementary"]','.ad','.ads','.advertisement','.sidebar','.cookie-banner','.popup','.modal'];
             for (const sel of remove) {

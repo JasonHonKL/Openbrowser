@@ -64,7 +64,6 @@ fn test_default_connection_pool() {
     assert_eq!(config.connection_pool.max_idle_per_host, 32);
     assert_eq!(config.connection_pool.idle_timeout_secs, 90);
     assert_eq!(config.connection_pool.tcp_keepalive_secs, 60);
-    assert!(config.connection_pool.enable_http2);
 }
 
 // ---------------------------------------------------------------------------
@@ -91,10 +90,7 @@ fn test_default_retry_config() {
     assert_eq!(retry.initial_backoff_ms, 100);
     assert_eq!(retry.max_backoff_ms, 10_000);
     assert!((retry.backoff_factor - 2.0).abs() < f64::EPSILON);
-    assert_eq!(
-        retry.retry_on_statuses,
-        vec![408, 429, 500, 502, 503, 504]
-    );
+    assert_eq!(retry.retry_on_statuses, vec![408, 429, 500, 502, 503, 504]);
 }
 
 // ---------------------------------------------------------------------------

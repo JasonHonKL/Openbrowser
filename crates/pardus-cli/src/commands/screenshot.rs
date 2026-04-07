@@ -1,8 +1,8 @@
 //! Screenshot capture command.
 
-use anyhow::Result;
 use std::path::PathBuf;
 
+use anyhow::Result;
 use pardus_core::screenshot::{ScreenshotFormat, ScreenshotOptions};
 
 pub async fn run(
@@ -46,14 +46,20 @@ pub async fn run(
 
     let bytes = if let Some(selector) = element {
         eprintln!("Capturing element '{}' from {}...", selector, url);
-        browser.capture_element_screenshot(url, selector, &opts).await?
+        browser
+            .capture_element_screenshot(url, selector, &opts)
+            .await?
     } else {
         eprintln!("Capturing {}...", url);
         browser.capture_screenshot(url, &opts).await?
     };
 
     std::fs::write(output, &bytes)?;
-    eprintln!("Screenshot saved to {} ({} bytes)", output.display(), bytes.len());
+    eprintln!(
+        "Screenshot saved to {} ({} bytes)",
+        output.display(),
+        bytes.len()
+    );
 
     Ok(())
 }

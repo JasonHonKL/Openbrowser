@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use anyhow::Result;
-
 use pardus_core::ProxyConfig;
 use pardus_kg::CrawlConfig;
 

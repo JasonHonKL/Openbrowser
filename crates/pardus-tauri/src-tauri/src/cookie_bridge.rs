@@ -81,7 +81,10 @@ mod tests {
     fn test_parse_cookie_string() {
         let cookies = parse_cookie_string("cf_clearance=abc123; _ga=GA1.2.123");
         assert_eq!(cookies.len(), 2);
-        assert_eq!(cookies[0], ("cf_clearance".to_string(), "abc123".to_string()));
+        assert_eq!(
+            cookies[0],
+            ("cf_clearance".to_string(), "abc123".to_string())
+        );
         assert_eq!(cookies[1], ("_ga".to_string(), "GA1.2.123".to_string()));
     }
 

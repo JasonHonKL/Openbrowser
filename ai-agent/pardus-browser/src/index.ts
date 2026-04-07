@@ -165,16 +165,14 @@ async function main(): Promise<void> {
   });
 
   // Handle Ctrl+C gracefully
-  process.on('SIGINT', async () => {
+  process.on('SIGINT', () => {
     console.log('\n\nReceived SIGINT, cleaning up...');
-    await agent.cleanup();
-    process.exit(0);
+    agent.cleanup().finally(() => process.exit(0));
   });
 
-  process.on('SIGTERM', async () => {
+  process.on('SIGTERM', () => {
     console.log('\n\nReceived SIGTERM, cleaning up...');
-    await agent.cleanup();
-    process.exit(0);
+    agent.cleanup().finally(() => process.exit(0));
   });
 
   const query = process.argv[2];

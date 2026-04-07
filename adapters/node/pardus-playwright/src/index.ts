@@ -24,6 +24,7 @@ class PardusLauncher {
   private port: number;
   private timeout: number;
   private binaryPath: string;
+  private killTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: PardusLaunchOptions = {}) {
     this.host = options.host ?? "127.0.0.1";
@@ -68,6 +69,15 @@ class PardusLauncher {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
+    this.process.stdout?.on("data", () => {});
+    this.process.stderr?.on("data", () => {});
+
+    this.process.on("error", (err) => {
+      if (!this.process?.killed) {
+        this.stop();
+      }
+    });
+
     this._cdpUrl = `http://${this.host}:${this.port}`;
 
     await this.waitForReady();
@@ -87,8 +97,17 @@ class PardusLauncher {
 
         http.get(`${this._cdpUrl}/json/version`, (res) => {
           let data = "";
-          res.on("data", (chunk: Buffer) => { data += chunk; });
-          res.on("end", () => resolve());
+          res.on("data", (_chunk: Buffer) => { data += _chunk; });
+          res.on("end", () => {
+            if (res.statusCode === 200) {
+              resolve();
+            } else if (Date.now() < deadline) {
+              setTimeout(check, 200);
+            } else {
+              this.stop();
+              reject(new Error(`pardus-browser did not start within ${this.timeout}s`));
+            }
+          });
         }).on("error", () => {
           if (Date.now() < deadline) {
             setTimeout(check, 200);
@@ -104,10 +123,16 @@ class PardusLauncher {
   }
 
   stop(): void {
+    if (this.killTimer) {
+      clearTimeout(this.killTimer);
+      this.killTimer = null;
+    }
+
     if (this.process && !this.process.killed) {
-      this.process.kill("SIGTERM");
       const pid = this.process.pid;
-      setTimeout(() => {
+      this.process.kill("SIGTERM");
+      this.killTimer = setTimeout(() => {
+        this.killTimer = null;
         try {
           process.kill(pid!, "SIGKILL");
         } catch {

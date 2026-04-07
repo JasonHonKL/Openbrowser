@@ -2,23 +2,25 @@
 //!
 //! Implements parallel subresource fetching with intelligent scheduling.
 
-pub mod scheduler;
 pub mod fetcher;
-pub mod priority;
 pub mod pool;
-
-pub use scheduler::{ResourceScheduler, ResourceTask, ScheduleResult};
-pub use fetcher::{ResourceFetcher, FetchOptions, FetchResult};
-pub use priority::{PriorityQueue, PriorityTask};
-pub use pool::{ConnectionPool, H2Connection, PoolConfig};
+pub mod priority;
+pub mod scheduler;
 
 use std::sync::Arc;
+
+pub use fetcher::{FetchOptions, FetchResult, ResourceFetcher};
+pub use pool::{ConnectionPool, H2Connection, PoolConfig};
+pub use priority::{PriorityQueue, PriorityTask};
+pub use scheduler::{ResourceScheduler, ResourceTask, ScheduleResult};
 
 /// Resource loading configuration
 #[derive(Debug, Clone)]
 pub struct ResourceConfig {
     /// Max concurrent connections per origin
     pub max_concurrent: usize,
+    /// Global concurrency cap across all origins
+    pub global_concurrency: usize,
     /// HTTP/2 stream limit
     pub h2_stream_limit: usize,
     /// Connection pool size
@@ -35,6 +37,7 @@ impl Default for ResourceConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 6,
+            global_concurrency: 12,
             h2_stream_limit: 100,
             pool_size: 32,
             h2_priority: true,
@@ -77,23 +80,19 @@ use crate::cache::ResourceCache;
 /// Resource manager that coordinates all resource operations
 pub struct ResourceManager {
     scheduler: Arc<ResourceScheduler>,
-    #[allow(dead_code)]
-    config: ResourceConfig,
 }
 
 impl ResourceManager {
     pub fn new(client: rquest::Client, config: ResourceConfig, cache: Arc<ResourceCache>) -> Self {
         let scheduler = Arc::new(ResourceScheduler::new(client, config.clone(), cache));
-        Self { scheduler, config }
+        Self { scheduler }
     }
 
     /// Fetch multiple resources in parallel
-    pub async fn fetch_batch(
-        &self,
-        resources: Vec<Resource>,
-    ) -> Vec<FetchResult> {
+    pub async fn fetch_batch(&self, resources: Vec<Resource>) -> Vec<FetchResult> {
         let scheduler = self.scheduler.clone();
-        let tasks: Vec<_> = resources.into_iter()
+        let tasks: Vec<_> = resources
+            .into_iter()
             .map(|r| ResourceTask::from(r))
             .collect();
 

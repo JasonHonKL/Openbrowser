@@ -1,13 +1,71 @@
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
 
 mod commands;
 mod config;
 
+fn build_proxy_config(
+    proxy: Option<String>,
+    proxy_http: Option<String>,
+    proxy_https: Option<String>,
+    no_proxy: Option<String>,
+    no_proxy_env: bool,
+) -> pardus_core::ProxyConfig {
+    let mut proxy_config = pardus_core::ProxyConfig::new();
+    if let Some(all_proxy) = proxy {
+        proxy_config = proxy_config.with_all_proxy(all_proxy);
+    }
+    if let Some(http) = proxy_http {
+        proxy_config = proxy_config.with_http_proxy(http);
+    }
+    if let Some(https) = proxy_https {
+        proxy_config = proxy_config.with_https_proxy(https);
+    }
+    if let Some(no) = no_proxy {
+        proxy_config = proxy_config.with_no_proxy(no);
+    }
+    if !no_proxy_env {
+        proxy_config = proxy_config.merge_env();
+    }
+    proxy_config
+}
+
+fn apply_cert_pinning(
+    browser_config: &mut pardus_core::BrowserConfig,
+    cert_pin: Vec<String>,
+    cert_pin_file: Option<PathBuf>,
+    pin_policy: Option<config::PinPolicyArg>,
+) {
+    if cert_pin.is_empty() && cert_pin_file.is_none() {
+        return;
+    }
+    let mut all_pins = cert_pin;
+    if let Some(path) = &cert_pin_file {
+        match config::load_pins_from_file(path) {
+            Ok(file_pins) => all_pins.extend(file_pins),
+            Err(e) => {
+                eprintln!("Warning: failed to load cert pin file: {}", e);
+            }
+        }
+    }
+    match config::build_cert_pinning_config(&all_pins, pin_policy, true) {
+        Ok(pin_config) => {
+            browser_config.cert_pinning = Some(pin_config);
+        }
+        Err(e) => {
+            eprintln!("Warning: invalid certificate pin config: {}", e);
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "pardus-browser")]
-#[command(version, about = "Headless browser for AI agents — semantic tree, no pixels")]
+#[command(
+    version,
+    about = "Headless browser for AI agents — semantic tree, no pixels"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -264,7 +322,6 @@ enum Commands {
 
     /// Map a site's functional structure into a Knowledge Graph
     Map {
-
         /// Root URL to start mapping from
         url: String,
 
@@ -509,49 +566,23 @@ async fn main() -> Result<()> {
             }
 
             let mut browser_config = pardus_core::BrowserConfig::default();
+            browser_config.proxy =
+                build_proxy_config(proxy, proxy_http, proxy_https, no_proxy, no_proxy_env);
+            apply_cert_pinning(&mut browser_config, cert_pin, cert_pin_file, pin_policy);
 
-            // Build proxy configuration
-            let mut proxy_config = pardus_core::ProxyConfig::new();
-            if let Some(all_proxy) = proxy {
-                proxy_config = proxy_config.with_all_proxy(all_proxy);
-            }
-            if let Some(http) = proxy_http {
-                proxy_config = proxy_config.with_http_proxy(http);
-            }
-            if let Some(https) = proxy_https {
-                proxy_config = proxy_config.with_https_proxy(https);
-            }
-            if let Some(no) = no_proxy {
-                proxy_config = proxy_config.with_no_proxy(no);
-            }
-            // Merge environment variables unless disabled
-            if !no_proxy_env {
-                proxy_config = proxy_config.merge_env();
-            }
-            browser_config.proxy = proxy_config;
-
-            if !cert_pin.is_empty() || cert_pin_file.is_some() {
-                let mut all_pins = cert_pin.clone();
-                if let Some(path) = &cert_pin_file {
-                    match config::load_pins_from_file(path) {
-                        Ok(file_pins) => all_pins.extend(file_pins),
-                        Err(e) => {
-                            eprintln!("Warning: failed to load cert pin file: {}", e);
-                        }
-                    }
-                }
-                match config::build_cert_pinning_config(&all_pins, pin_policy, true) {
-                    Ok(pin_config) => {
-                        browser_config.cert_pinning = Some(pin_config);
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: invalid certificate pin config: {}", e);
-                    }
-                }
-            }
-
-            commands::navigate::run_with_config(&url, format, interactive_only, with_nav, js, wait_ms, network_log, har, coverage, browser_config,
-            ).await?;
+            commands::navigate::run_with_config(
+                &url,
+                format,
+                interactive_only,
+                with_nav,
+                js,
+                wait_ms,
+                network_log,
+                har,
+                coverage,
+                browser_config,
+            )
+            .await?;
         }
         Commands::Interact {
             url,
@@ -566,74 +597,31 @@ async fn main() -> Result<()> {
             no_proxy_env,
         } => {
             let mut browser_config = pardus_core::BrowserConfig::default();
+            browser_config.proxy =
+                build_proxy_config(proxy, proxy_http, proxy_https, no_proxy, no_proxy_env);
 
-            // Build proxy configuration
-            let mut proxy_config = pardus_core::ProxyConfig::new();
-            if let Some(all_proxy) = proxy {
-                proxy_config = proxy_config.with_all_proxy(all_proxy);
-            }
-            if let Some(http) = proxy_http {
-                proxy_config = proxy_config.with_http_proxy(http);
-            }
-            if let Some(https) = proxy_https {
-                proxy_config = proxy_config.with_https_proxy(https);
-            }
-            if let Some(no) = no_proxy {
-                proxy_config = proxy_config.with_no_proxy(no);
-            }
-            // Merge environment variables unless disabled
-            if !no_proxy_env {
-                proxy_config = proxy_config.merge_env();
-            }
-            browser_config.proxy = proxy_config;
-
-            commands::interact::run_with_config(&url, action, format, js, wait_ms, browser_config,
-            ).await?;
+            commands::interact::run_with_config(&url, action, format, js, wait_ms, browser_config)
+                .await?;
         }
-        Commands::Serve { host, port, timeout, cert_pin, cert_pin_file, pin_policy, proxy, proxy_http, proxy_https, no_proxy, no_proxy_env } => {
+        Commands::Serve {
+            host,
+            port,
+            timeout,
+            cert_pin,
+            cert_pin_file,
+            pin_policy,
+            proxy,
+            proxy_http,
+            proxy_https,
+            no_proxy,
+            no_proxy_env,
+        } => {
             tracing::info!("Starting CDP WebSocket server on ws://{host}:{port}");
 
             let mut browser_config = pardus_core::BrowserConfig::default();
-
-            // Build proxy configuration
-            let mut proxy_config = pardus_core::ProxyConfig::new();
-            if let Some(all_proxy) = proxy {
-                proxy_config = proxy_config.with_all_proxy(all_proxy);
-            }
-            if let Some(http) = proxy_http {
-                proxy_config = proxy_config.with_http_proxy(http);
-            }
-            if let Some(https) = proxy_https {
-                proxy_config = proxy_config.with_https_proxy(https);
-            }
-            if let Some(no) = no_proxy {
-                proxy_config = proxy_config.with_no_proxy(no);
-            }
-            // Merge environment variables unless disabled
-            if !no_proxy_env {
-                proxy_config = proxy_config.merge_env();
-            }
-            browser_config.proxy = proxy_config;
-
-            if !cert_pin.is_empty() || cert_pin_file.is_some() {
-                let mut all_pins = cert_pin;
-                if let Some(path) = &cert_pin_file {
-                    match config::load_pins_from_file(path) {
-                        Ok(file_pins) => all_pins.extend(file_pins),
-                        Err(e) => {
-                            eprintln!("Warning: failed to load cert pin file: {}", e);
-                        }
-                    }
-                }
-                match config::build_cert_pinning_config(&all_pins, pin_policy, true) {
-                    Ok(pin_config) => {
-                        browser_config.cert_pinning = Some(pin_config);
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: invalid certificate pin config: {}", e);
-                    }
-                }
-            }
+            browser_config.proxy =
+                build_proxy_config(proxy, proxy_http, proxy_https, no_proxy, no_proxy_env);
+            apply_cert_pinning(&mut browser_config, cert_pin, cert_pin_file, pin_policy);
 
             commands::serve::run(&host, port, timeout, browser_config).await?;
         }
@@ -644,25 +632,16 @@ async fn main() -> Result<()> {
         } => {
             commands::clean::run(cache_dir, cookies_only, cache_only)?;
         }
-        Commands::Tab { action, proxy, proxy_http, proxy_https, no_proxy, no_proxy_env } => {
-            // Build proxy configuration
-            let mut proxy_config = pardus_core::ProxyConfig::new();
-            if let Some(all_proxy) = proxy {
-                proxy_config = proxy_config.with_all_proxy(all_proxy);
-            }
-            if let Some(http) = proxy_http {
-                proxy_config = proxy_config.with_http_proxy(http);
-            }
-            if let Some(https) = proxy_https {
-                proxy_config = proxy_config.with_https_proxy(https);
-            }
-            if let Some(no) = no_proxy {
-                proxy_config = proxy_config.with_no_proxy(no);
-            }
-            // Merge environment variables unless disabled
-            if !no_proxy_env {
-                proxy_config = proxy_config.merge_env();
-            }
+        Commands::Tab {
+            action,
+            proxy,
+            proxy_http,
+            proxy_https,
+            no_proxy,
+            no_proxy_env,
+        } => {
+            let proxy_config =
+                build_proxy_config(proxy, proxy_http, proxy_https, no_proxy, no_proxy_env);
 
             match action {
                 TabAction::List => {
@@ -672,8 +651,7 @@ async fn main() -> Result<()> {
                     commands::tab::list(&browser, OutputFormatArg::Md).await?;
                 }
                 TabAction::Open { url, js } => {
-                    commands::tab::open_with_config(&url, js, proxy_config,
-                    ).await?;
+                    commands::tab::open_with_config(&url, js, proxy_config).await?;
                 }
                 TabAction::Info => {
                     let mut browser_config = pardus_core::BrowserConfig::default();
@@ -682,30 +660,22 @@ async fn main() -> Result<()> {
                     commands::tab::info(&browser, OutputFormatArg::Md)?;
                 }
                 TabAction::Navigate { url } => {
-                    commands::tab::navigate_with_config(&url, proxy_config,
-                    ).await?;
+                    commands::tab::navigate_with_config(&url, proxy_config).await?;
                 }
             }
         }
-        Commands::Repl { js, format, wait_ms, proxy, proxy_http, proxy_https, no_proxy, no_proxy_env } => {
-            // Build proxy configuration
-            let mut proxy_config = pardus_core::ProxyConfig::new();
-            if let Some(all_proxy) = proxy {
-                proxy_config = proxy_config.with_all_proxy(all_proxy);
-            }
-            if let Some(http) = proxy_http {
-                proxy_config = proxy_config.with_http_proxy(http);
-            }
-            if let Some(https) = proxy_https {
-                proxy_config = proxy_config.with_https_proxy(https);
-            }
-            if let Some(no) = no_proxy {
-                proxy_config = proxy_config.with_no_proxy(no);
-            }
-            // Merge environment variables unless disabled
-            if !no_proxy_env {
-                proxy_config = proxy_config.merge_env();
-            }
+        Commands::Repl {
+            js,
+            format,
+            wait_ms,
+            proxy,
+            proxy_http,
+            proxy_https,
+            no_proxy,
+            no_proxy_env,
+        } => {
+            let proxy_config =
+                build_proxy_config(proxy, proxy_http, proxy_https, no_proxy, no_proxy_env);
 
             commands::repl::run_with_config(js, format, wait_ms, proxy_config).await?;
         }
@@ -725,28 +695,22 @@ async fn main() -> Result<()> {
             no_proxy,
             no_proxy_env,
         } => {
-            // Build proxy configuration
-            let mut proxy_config = pardus_core::ProxyConfig::new();
-            if let Some(all_proxy) = proxy {
-                proxy_config = proxy_config.with_all_proxy(all_proxy);
-            }
-            if let Some(http) = proxy_http {
-                proxy_config = proxy_config.with_http_proxy(http);
-            }
-            if let Some(https) = proxy_https {
-                proxy_config = proxy_config.with_https_proxy(https);
-            }
-            if let Some(no) = no_proxy {
-                proxy_config = proxy_config.with_no_proxy(no);
-            }
-            // Merge environment variables unless disabled
-            if !no_proxy_env {
-                proxy_config = proxy_config.merge_env();
-            }
+            let proxy_config =
+                build_proxy_config(proxy, proxy_http, proxy_https, no_proxy, no_proxy_env);
 
             commands::map::run_with_config(
-                &url, &output, depth, max_pages, delay, skip_verify, pagination, hash_nav, verbose, proxy_config,
-            ).await?;
+                &url,
+                &output,
+                depth,
+                max_pages,
+                delay,
+                skip_verify,
+                pagination,
+                hash_nav,
+                verbose,
+                proxy_config,
+            )
+            .await?;
         }
         #[cfg(feature = "screenshot")]
         Commands::Screenshot {
@@ -770,7 +734,8 @@ async fn main() -> Result<()> {
                 quality,
                 chrome_path.as_ref(),
                 timeout_ms,
-            ).await?;
+            )
+            .await?;
         }
     }
 

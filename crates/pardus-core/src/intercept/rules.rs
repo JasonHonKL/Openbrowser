@@ -7,7 +7,7 @@ use crate::intercept::RequestContext;
 /// A pattern-matching rule used by built-in interceptors.
 pub enum InterceptorRule {
     /// Glob pattern matched against the full URL (e.g. `*/images/*`).
-    UrlGlob(String),
+    UrlGlob(String, regex::Regex),
     /// Regex matched against the full URL.
     UrlRegex(regex::Regex),
     /// Exact or wildcard domain match (e.g. `example.com`, `*.example.com`).
@@ -23,7 +23,7 @@ pub enum InterceptorRule {
 impl std::fmt::Debug for InterceptorRule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UrlGlob(p) => f.debug_tuple("UrlGlob").field(p).finish(),
+            Self::UrlGlob(p, _) => f.debug_tuple("UrlGlob").field(p).finish(),
             Self::UrlRegex(re) => f.debug_tuple("UrlRegex").field(&re.to_string()).finish(),
             Self::Domain(d) => f.debug_tuple("Domain").field(d).finish(),
             Self::ResourceType(types) => f.debug_tuple("ResourceType").field(types).finish(),
@@ -34,10 +34,19 @@ impl std::fmt::Debug for InterceptorRule {
 }
 
 impl InterceptorRule {
+    /// Create a URL glob rule from a glob pattern.
+    pub fn url_glob(pattern: impl Into<String>) -> Self {
+        let p = pattern.into();
+        let regex_str = glob_to_regex(&p);
+        let re = regex::Regex::new(&regex_str)
+            .unwrap_or_else(|_| regex::Regex::new(&regex::escape(&p)).unwrap());
+        Self::UrlGlob(p, re)
+    }
+
     /// Check if this rule matches the given request context.
     pub fn matches(&self, ctx: &RequestContext) -> bool {
         match self {
-            Self::UrlGlob(pattern) => glob_matches(pattern, &ctx.url),
+            Self::UrlGlob(_, re) => re.is_match(&ctx.url),
             Self::UrlRegex(re) => re.is_match(&ctx.url),
             Self::Domain(domain) => domain_matches(domain, &ctx.url),
             Self::ResourceType(types) => types.contains(&ctx.resource_type),
@@ -110,9 +119,11 @@ fn url_path(url: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
     use pardus_debug::Initiator;
+
+    use super::*;
 
     fn ctx_with_url(url: &str) -> RequestContext {
         RequestContext {
@@ -142,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_glob_star_matches_any() {
-        let rule = InterceptorRule::UrlGlob("*example.com*".to_string());
+        let rule = InterceptorRule::url_glob("*example.com*");
         assert!(rule.matches(&ctx_with_url("https://example.com/page")));
         assert!(rule.matches(&ctx_with_url("https://sub.example.com/page")));
         assert!(!rule.matches(&ctx_with_url("https://other.com/page")));
@@ -150,14 +161,14 @@ mod tests {
 
     #[test]
     fn test_glob_path_pattern() {
-        let rule = InterceptorRule::UrlGlob("*/api/*".to_string());
+        let rule = InterceptorRule::url_glob("*/api/*");
         assert!(rule.matches(&ctx_with_url("https://example.com/api/users")));
         assert!(!rule.matches(&ctx_with_url("https://example.com/page")));
     }
 
     #[test]
     fn test_glob_extension() {
-        let rule = InterceptorRule::UrlGlob("*.css".to_string());
+        let rule = InterceptorRule::url_glob("*.css");
         assert!(rule.matches(&ctx_with_url("https://example.com/styles/main.css")));
         assert!(!rule.matches(&ctx_with_url("https://example.com/styles/main.js")));
     }
@@ -200,10 +211,8 @@ mod tests {
 
     #[test]
     fn test_resource_type_match() {
-        let rule = InterceptorRule::ResourceType(vec![
-            ResourceType::Stylesheet,
-            ResourceType::Image,
-        ]);
+        let rule =
+            InterceptorRule::ResourceType(vec![ResourceType::Stylesheet, ResourceType::Image]);
         assert!(rule.matches(&ctx_with_resource_type(ResourceType::Stylesheet)));
         assert!(rule.matches(&ctx_with_resource_type(ResourceType::Image)));
         assert!(!rule.matches(&ctx_with_resource_type(ResourceType::Document)));

@@ -1,10 +1,12 @@
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use scraper::{Html, Selector};
-use crate::app::App;
-use crate::page::Page;
+
 use super::actions::InteractionResult;
+use crate::{app::App, page::Page};
 
 pub async fn wait_for_selector(
     app: &Arc<App>,
@@ -279,15 +281,11 @@ pub async fn wait_smart(
         WaitCondition::Selector(sel) => {
             wait_for_selector(app, page, sel, timeout_ms, interval_ms).await
         }
-        WaitCondition::ContentLoaded => {
-            wait_for_loaded(app, page, timeout_ms, interval_ms).await
-        }
+        WaitCondition::ContentLoaded => wait_for_loaded(app, page, timeout_ms, interval_ms).await,
         WaitCondition::ContentStable => {
             wait_for_stable(app, page, timeout_ms, interval_ms, 3).await
         }
-        WaitCondition::NetworkIdle => {
-            wait_for_stable(app, page, timeout_ms, interval_ms, 5).await
-        }
+        WaitCondition::NetworkIdle => wait_for_stable(app, page, timeout_ms, interval_ms, 5).await,
         WaitCondition::MinInteractiveElements(min) => {
             wait_for_interactive(app, page, *min, timeout_ms, interval_ms).await
         }
@@ -313,13 +311,7 @@ fn extract_body_text(html: &Html) -> String {
 }
 
 fn has_loading_indicators(html: &Html) -> bool {
-    let mut text = String::new();
-    for node in html.tree.nodes() {
-        if let Some(t) = node.value().as_text() {
-            text.push_str(t);
-        }
-    }
-    let text = text.to_lowercase();
+    let text = extract_body_text(html).to_lowercase();
     let indicators = [
         "loading",
         "please wait",
@@ -340,7 +332,10 @@ fn has_loading_indicators(html: &Html) -> bool {
         }
     }
 
-    if let Ok(sel) = Selector::parse("[class*='loading'], [class*='spinner'], [class*='skeleton'], [role='progressbar'], [aria-busy='true']") {
+    if let Ok(sel) = Selector::parse(
+        "[class*='loading'], [class*='spinner'], [class*='skeleton'], [role='progressbar'], \
+         [aria-busy='true']",
+    ) {
         if html.select(&sel).next().is_some() {
             return true;
         }
@@ -394,7 +389,7 @@ mod tests {
     #[test]
     fn test_has_loading_indicators_text() {
         let html = Html::parse_document(
-            r#"<html><body><div class="spinner">Loading content, please wait...</div></body></html>"#
+            r#"<html><body><div class="spinner">Loading content, please wait...</div></body></html>"#,
         );
         assert!(has_loading_indicators(&html));
     }
@@ -402,7 +397,7 @@ mod tests {
     #[test]
     fn test_no_loading_indicators() {
         let html = Html::parse_document(
-            r#"<html><body><h1>Welcome</h1><p>This is real content.</p></body></html>"#
+            r#"<html><body><h1>Welcome</h1><p>This is real content.</p></body></html>"#,
         );
         assert!(!has_loading_indicators(&html));
     }
@@ -410,7 +405,7 @@ mod tests {
     #[test]
     fn test_single_loading_word_no_indicator() {
         let html = Html::parse_document(
-            r#"<html><body><p>Processing your request is important to us.</p></body></html>"#
+            r#"<html><body><p>Processing your request is important to us.</p></body></html>"#,
         );
         assert!(!has_loading_indicators(&html));
     }
@@ -418,7 +413,7 @@ mod tests {
     #[test]
     fn test_loading_indicator_aria_busy() {
         let html = Html::parse_document(
-            r#"<html><body><div aria-busy="true">Loading...</div></body></html>"#
+            r#"<html><body><div aria-busy="true">Loading...</div></body></html>"#,
         );
         assert!(has_loading_indicators(&html));
     }
@@ -426,7 +421,7 @@ mod tests {
     #[test]
     fn test_loading_indicator_class() {
         let html = Html::parse_document(
-            r#"<html><body><div class="loading-spinner">Working...</div></body></html>"#
+            r#"<html><body><div class="loading-spinner">Working...</div></body></html>"#,
         );
         assert!(has_loading_indicators(&html));
     }
@@ -434,7 +429,7 @@ mod tests {
     #[test]
     fn test_loading_indicator_progressbar_role() {
         let html = Html::parse_document(
-            r#"<html><body><div role="progressbar">Loading...</div></body></html>"#
+            r#"<html><body><div role="progressbar">Loading...</div></body></html>"#,
         );
         assert!(has_loading_indicators(&html));
     }
@@ -442,19 +437,17 @@ mod tests {
     #[test]
     fn test_loading_indicator_skeleton_class() {
         let html = Html::parse_document(
-            r#"<html><body><div class="skeleton-card">...</div></body></html>"#
+            r#"<html><body><div class="skeleton-card">...</div></body></html>"#,
         );
         assert!(has_loading_indicators(&html));
     }
 
     #[test]
     fn test_content_fingerprint_stable() {
-        let html1 = Html::parse_document(
-            "<html><body><h1>Test</h1><p>Hello world</p></body></html>"
-        );
-        let html2 = Html::parse_document(
-            "<html><body><h1>Test</h1><p>Hello world</p></body></html>"
-        );
+        let html1 =
+            Html::parse_document("<html><body><h1>Test</h1><p>Hello world</p></body></html>");
+        let html2 =
+            Html::parse_document("<html><body><h1>Test</h1><p>Hello world</p></body></html>");
         let fp1 = content_fingerprint(&html1);
         let fp2 = content_fingerprint(&html2);
         assert_eq!(fp1, fp2);
@@ -462,12 +455,10 @@ mod tests {
 
     #[test]
     fn test_content_fingerprint_differs() {
-        let html1 = Html::parse_document(
-            "<html><body><h1>Test</h1><p>Hello world</p></body></html>"
-        );
-        let html2 = Html::parse_document(
-            "<html><body><h1>Test</h1><p>Different content</p></body></html>"
-        );
+        let html1 =
+            Html::parse_document("<html><body><h1>Test</h1><p>Hello world</p></body></html>");
+        let html2 =
+            Html::parse_document("<html><body><h1>Test</h1><p>Different content</p></body></html>");
         let fp1 = content_fingerprint(&html1);
         let fp2 = content_fingerprint(&html2);
         assert_ne!(fp1, fp2);
@@ -476,33 +467,39 @@ mod tests {
     #[test]
     fn test_content_fingerprint_ignores_script() {
         let html1 = Html::parse_document(
-            r#"<html><body><h1>Test</h1><script>var x = 1;</script><p>Hello</p></body></html>"#
+            r#"<html><body><h1>Test</h1><script>var x = 1;</script><p>Hello</p></body></html>"#,
         );
         let html2 = Html::parse_document(
-            r#"<html><body><h1>Test</h1><script>var x = 99999;</script><p>Hello</p></body></html>"#
+            r#"<html><body><h1>Test</h1><script>var x = 99999;</script><p>Hello</p></body></html>"#,
         );
         let fp1 = content_fingerprint(&html1);
         let fp2 = content_fingerprint(&html2);
-        assert_eq!(fp1, fp2, "fingerprint should ignore script content differences");
+        assert_eq!(
+            fp1, fp2,
+            "fingerprint should ignore script content differences"
+        );
     }
 
     #[test]
     fn test_content_fingerprint_ignores_style() {
         let html1 = Html::parse_document(
-            r#"<html><body><h1>Test</h1><style>.red { color: red; }</style><p>Hello</p></body></html>"#
+            r#"<html><body><h1>Test</h1><style>.red { color: red; }</style><p>Hello</p></body></html>"#,
         );
         let html2 = Html::parse_document(
-            r#"<html><body><h1>Test</h1><style>.blue { color: blue; }</style><p>Hello</p></body></html>"#
+            r#"<html><body><h1>Test</h1><style>.blue { color: blue; }</style><p>Hello</p></body></html>"#,
         );
         let fp1 = content_fingerprint(&html1);
         let fp2 = content_fingerprint(&html2);
-        assert_eq!(fp1, fp2, "fingerprint should ignore style content differences");
+        assert_eq!(
+            fp1, fp2,
+            "fingerprint should ignore style content differences"
+        );
     }
 
     #[test]
     fn test_extract_body_text() {
         let html = Html::parse_document(
-            "<html><head><title>Ignore</title></head><body><p>Hello</p></body></html>"
+            "<html><head><title>Ignore</title></head><body><p>Hello</p></body></html>",
         );
         let text = extract_body_text(&html);
         assert!(text.contains("Hello"));
@@ -518,11 +515,20 @@ mod tests {
 
     #[test]
     fn test_wait_condition_equality() {
-        assert_eq!(WaitCondition::Selector("#foo".to_string()), WaitCondition::Selector("#foo".to_string()));
+        assert_eq!(
+            WaitCondition::Selector("#foo".to_string()),
+            WaitCondition::Selector("#foo".to_string())
+        );
         assert_eq!(WaitCondition::ContentLoaded, WaitCondition::ContentLoaded);
         assert_ne!(WaitCondition::ContentLoaded, WaitCondition::ContentStable);
-        assert_eq!(WaitCondition::MinInteractiveElements(5), WaitCondition::MinInteractiveElements(5));
-        assert_ne!(WaitCondition::MinInteractiveElements(3), WaitCondition::MinInteractiveElements(5));
+        assert_eq!(
+            WaitCondition::MinInteractiveElements(5),
+            WaitCondition::MinInteractiveElements(5)
+        );
+        assert_ne!(
+            WaitCondition::MinInteractiveElements(3),
+            WaitCondition::MinInteractiveElements(5)
+        );
     }
 
     #[test]

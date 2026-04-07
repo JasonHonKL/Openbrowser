@@ -907,6 +907,122 @@ export const browserTools: ToolDefinition[] = [
       },
     },
   },
+  // --- OAuth 2.0 / OIDC tools ---
+  {
+    type: 'function',
+    function: {
+      name: 'browser_oauth_set_provider',
+      description:
+        'Register an OAuth 2.0 provider configuration. Must be called before starting an OAuth flow. If only issuer is provided (no explicit endpoints), OIDC auto-discovery is used.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          name: {
+            type: 'string',
+            description: 'Logical name for this provider (e.g., "google", "github")',
+          },
+          client_id: { type: 'string', description: 'OAuth client ID' },
+          client_secret: {
+            type: 'string',
+            description: 'Optional client secret (not needed for pure PKCE)',
+          },
+          issuer: {
+            type: 'string',
+            description:
+              'OIDC issuer URL for auto-discovery (e.g., "https://accounts.google.com")',
+          },
+          authorization_endpoint: {
+            type: 'string',
+            description: 'Authorization endpoint URL (required if no issuer)',
+          },
+          token_endpoint: {
+            type: 'string',
+            description: 'Token endpoint URL (required if no issuer)',
+          },
+          scopes: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'OAuth scopes (e.g., ["openid", "profile", "email"])',
+          },
+          redirect_uri: {
+            type: 'string',
+            description:
+              'Redirect URI registered with the provider (default: http://localhost:8080/callback)',
+          },
+        },
+        required: ['instance_id', 'name', 'client_id', 'scopes'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_oauth_start',
+      description:
+        "Start an OAuth 2.0 authorization code flow with PKCE. Navigates to the provider's authorization URL and captures the redirect callback. If login is required, the page content is returned for interaction. Call browser_oauth_complete after login succeeds.",
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          provider: {
+            type: 'string',
+            description: 'Provider name (from browser_oauth_set_provider)',
+          },
+          scopes: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Override scopes for this flow',
+          },
+          extra_params: {
+            type: 'object',
+            description:
+              'Extra query parameters for the authorization URL (e.g., {"prompt": "consent"})',
+          },
+        },
+        required: ['instance_id', 'provider'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_oauth_complete',
+      description:
+        'Complete the OAuth flow by exchanging the captured authorization code for tokens. On success, tokens are stored and automatically injected into future requests to the provider domain.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          provider: { type: 'string', description: 'Provider name' },
+          code: {
+            type: 'string',
+            description: 'Optional: explicit authorization code (if not captured from redirect)',
+          },
+        },
+        required: ['instance_id', 'provider'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_oauth_status',
+      description:
+        'Get the status of OAuth sessions for the browser instance. Shows active providers, token expiry, and whether auto-injection is active.',
+      parameters: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', description: 'The browser instance ID' },
+          provider: {
+            type: 'string',
+            description: 'Optional: get status for a specific provider only',
+          },
+        },
+        required: ['instance_id'],
+      },
+    },
+  },
 ];
 
 export type BrowserToolName =
@@ -949,4 +1065,8 @@ export type BrowserToolName =
   | 'browser_network_log'
   | 'browser_iframe_enter'
   | 'browser_iframe_exit'
-  | 'browser_diff';
+  | 'browser_diff'
+  | 'browser_oauth_set_provider'
+  | 'browser_oauth_start'
+  | 'browser_oauth_complete'
+  | 'browser_oauth_status';

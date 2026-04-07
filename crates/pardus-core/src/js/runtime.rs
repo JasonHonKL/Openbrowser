@@ -3,24 +3,28 @@
 //! Uses deno_core (V8) to execute JavaScript with thread-based timeouts.
 //! Provides a minimal `document` and `window` shim via ops that interact with the DOM.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 
 use deno_core::*;
 use parking_lot::{Condvar, Mutex};
 use scraper::{Html, Selector};
 use url::Url;
 
-use super::dom::DomDocument;
-use super::extension::pardus_dom;
-use super::snapshot::get_bootstrap_snapshot;
-use crate::sandbox::{JsSandboxMode, SandboxPolicy};
-use crate::session::SessionStore;
+use super::{dom::DomDocument, extension::pardus_dom, snapshot::get_bootstrap_snapshot};
+use crate::{
+    sandbox::{JsSandboxMode, SandboxPolicy},
+    session::SessionStore,
+};
 
 /// Per-execution in-memory sessionStorage (not persisted to disk).
 pub type SessionStorageMap = HashMap<String, HashMap<String, String>>;
@@ -168,7 +172,10 @@ async fn fetch_external_scripts(
 ) -> Vec<ScriptInfo> {
     let client = match rquest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout_ms))
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .user_agent(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like \
+             Gecko) Chrome/131.0.0.0 Safari/537.36",
+        )
         .build()
     {
         Ok(c) => c,
@@ -184,7 +191,7 @@ async fn fetch_external_scripts(
             Ok(response) => {
                 let status = response.status().as_u16();
                 if !(200..300).contains(&status) {
-                    eprintln!("[JS] External script {} returned HTTP {}", url, status);
+                    tracing::warn!("[JS] External script {} returned HTTP {}", url, status);
                     continue;
                 }
                 if let Some(len) = response
@@ -194,7 +201,7 @@ async fn fetch_external_scripts(
                     .and_then(|s| s.parse::<usize>().ok())
                 {
                     if len > max_size {
-                        eprintln!("[JS] External script too large: {} bytes", len);
+                        tracing::warn!("[JS] External script too large: {} bytes", len);
                         continue;
                     }
                 }
@@ -205,7 +212,12 @@ async fn fetch_external_scripts(
                             && !is_analytics_script(&code)
                             && !is_problematic_script(&code)
                         {
-                            eprintln!("[JS] Fetched external script {}: {} ({} bytes)", i, url, code.len());
+                            tracing::debug!(
+                                "[JS] Fetched external script {}: {} ({} bytes)",
+                                i,
+                                url,
+                                code.len()
+                            );
                             results.push(ScriptInfo {
                                 name: format!("external_script_{}.js", i),
                                 code,
@@ -213,12 +225,12 @@ async fn fetch_external_scripts(
                         }
                     }
                     Err(e) => {
-                        eprintln!("[JS] Failed to read external script {}: {}", url, e);
+                        tracing::warn!("[JS] Failed to read external script {}: {}", url, e);
                     }
                 }
             }
             Err(e) => {
-                eprintln!("[JS] Failed to fetch external script {}: {}", url, e);
+                tracing::warn!("[JS] Failed to fetch external script {}: {}", url, e);
             }
         }
     }
@@ -241,7 +253,10 @@ fn transform_module_syntax(code: &str) -> String {
     for line in code.lines() {
         let trimmed = line.trim();
 
-        if trimmed.starts_with("import ") || trimmed.starts_with("import{") || trimmed.starts_with("import(") {
+        if trimmed.starts_with("import ")
+            || trimmed.starts_with("import{")
+            || trimmed.starts_with("import(")
+        {
             continue;
         }
 
@@ -315,15 +330,21 @@ fn create_runtime(
     runtime.op_state().borrow_mut().put(dom);
 
     // Store timer queue in op state
-    runtime.op_state().borrow_mut().put(super::timer::TimerQueue::new());
+    runtime
+        .op_state()
+        .borrow_mut()
+        .put(super::timer::TimerQueue::new());
 
     // Store sandbox policy in op state so ops can check restrictions
     runtime.op_state().borrow_mut().put(sandbox.clone());
 
     // Store per-runtime fetch policy
-    runtime.op_state().borrow_mut().put(super::fetch::FetchPolicy {
-        blocked: sandbox.block_js_fetch,
-    });
+    runtime
+        .op_state()
+        .borrow_mut()
+        .put(super::fetch::FetchPolicy {
+            blocked: sandbox.block_js_fetch,
+        });
 
     // Store session store for cookie/localStorage ops
     if let Some(session_store) = session {
@@ -331,7 +352,10 @@ fn create_runtime(
     }
 
     // Store per-execution in-memory sessionStorage
-    runtime.op_state().borrow_mut().put(SessionStorageMap::new());
+    runtime
+        .op_state()
+        .borrow_mut()
+        .put(SessionStorageMap::new());
 
     // Set up window.location and user agent from base_url.
     // Use individual property assignments (not `window.location = {...}`)
@@ -391,7 +415,10 @@ fn create_runtime_snapshot(
     runtime.op_state().borrow_mut().put(dom);
 
     // Store timer queue in op state
-    runtime.op_state().borrow_mut().put(super::timer::TimerQueue::new());
+    runtime
+        .op_state()
+        .borrow_mut()
+        .put(super::timer::TimerQueue::new());
 
     // Store sandbox policy in op state so ops can check restrictions
     runtime.op_state().borrow_mut().put(sandbox.clone());
@@ -402,7 +429,10 @@ fn create_runtime_snapshot(
     }
 
     // Store per-execution in-memory sessionStorage
-    runtime.op_state().borrow_mut().put(SessionStorageMap::new());
+    runtime
+        .op_state()
+        .borrow_mut()
+        .put(SessionStorageMap::new());
 
     // Set up window.location and user agent from base_url.
     // Use individual property assignments (not `window.location = {...}`)
@@ -448,6 +478,7 @@ fn create_runtime_snapshot(
 /// Result of script execution in a thread.
 struct ThreadResult {
     dom_html: Option<String>,
+    mutations: Vec<super::dom::StructuralMutation>,
     #[allow(dead_code)]
     error: Option<String>,
 }
@@ -460,9 +491,7 @@ struct ThreadDoneGuard {
 }
 
 impl Drop for ThreadDoneGuard {
-    fn drop(&mut self) {
-        self.cvar.notify_one();
-    }
+    fn drop(&mut self) { self.cvar.notify_one(); }
 }
 
 /// Execute scripts in a separate thread with timeout, graceful termination, and no leaks.
@@ -474,9 +503,10 @@ fn execute_scripts_with_timeout(
     sandbox: SandboxPolicy,
     user_agent: String,
     session: Option<Arc<SessionStore>>,
-) -> Option<String> {
+) -> Option<(String, Vec<super::dom::StructuralMutation>)> {
     let lock = Arc::new(Mutex::new(ThreadResult {
         dom_html: None,
+        mutations: Vec::new(),
         error: None,
     }));
     let cvar = Arc::new(Condvar::new());
@@ -497,6 +527,7 @@ fn execute_scripts_with_timeout(
             Err(e) => {
                 *lock.lock() = ThreadResult {
                     dom_html: None,
+                    mutations: Vec::new(),
                     error: Some(format!("Invalid base URL: {}", e)),
                 };
                 return;
@@ -514,16 +545,18 @@ fn execute_scripts_with_timeout(
         let dom = Rc::new(RefCell::new(doc));
 
         // Create runtime (pass sandbox policy, use snapshot if available)
-        let (mut runtime, bootstrapped) = match create_runtime_snapshot(dom.clone(), &base, &sandbox, &user_agent, session) {
-            Ok(r) => r,
-            Err(e) => {
-                *lock.lock() = ThreadResult {
-                    dom_html: None,
-                    error: Some(format!("Failed to create runtime: {}", e)),
-                };
-                return;
-            }
-        };
+        let (mut runtime, bootstrapped) =
+            match create_runtime_snapshot(dom.clone(), &base, &sandbox, &user_agent, session) {
+                Ok(r) => r,
+                Err(e) => {
+                    *lock.lock() = ThreadResult {
+                        dom_html: None,
+                        mutations: Vec::new(),
+                        error: Some(format!("Failed to create runtime: {}", e)),
+                    };
+                    return;
+                }
+            };
 
         // Execute bootstrap.js only if not already loaded from snapshot
         if !bootstrapped {
@@ -534,6 +567,7 @@ fn execute_scripts_with_timeout(
             if let Err(e) = runtime.execute_script("bootstrap.js", bootstrap) {
                 *lock.lock() = ThreadResult {
                     dom_html: None,
+                    mutations: Vec::new(),
                     error: Some(format!("Bootstrap error: {}", e)),
                 };
                 return;
@@ -551,7 +585,7 @@ fn execute_scripts_with_timeout(
             }
             if let Err(e) = runtime.execute_script(script.name.clone(), script.code) {
                 // Log error but continue with next script
-                eprintln!("[JS] Script {} error: {}", script.name, e);
+                tracing::warn!("[JS] Script {} error: {}", script.name, e);
             }
         }
 
@@ -560,17 +594,21 @@ fn execute_scripts_with_timeout(
         }
 
         // Fire DOMContentLoaded event after all scripts
-        let _ = runtime.execute_script("dom_content_loaded.js", r#"
+        let _ = runtime.execute_script(
+            "dom_content_loaded.js",
+            r#"
     (function() {
         if (typeof _fireDOMContentLoaded === 'function') _fireDOMContentLoaded();
         var event = new Event('DOMContentLoaded', { bubbles: true, cancelable: false });
         document.dispatchEvent(event);
     })();
-"#);
+"#,
+        );
 
         // Flush pending mutation observer callbacks after DOMContentLoaded
-        let _ = runtime.execute_script("mutation_flush_dcl.js",
-            "if (typeof _deliverPendingMutations === 'function') _deliverPendingMutations();"
+        let _ = runtime.execute_script(
+            "mutation_flush_dcl.js",
+            "if (typeof _deliverPendingMutations === 'function') _deliverPendingMutations();",
         );
 
         // Run event loop with bounded timeout (not infinite)
@@ -607,8 +645,9 @@ fn execute_scripts_with_timeout(
             }
 
             // Flush pending mutation observer callbacks after each event loop poll
-            let _ = runtime.execute_script("mutation_flush_evloop.js",
-                "if (typeof _deliverPendingMutations === 'function') _deliverPendingMutations();"
+            let _ = runtime.execute_script(
+                "mutation_flush_evloop.js",
+                "if (typeof _deliverPendingMutations === 'function') _deliverPendingMutations();",
             );
         }
 
@@ -624,7 +663,9 @@ fn execute_scripts_with_timeout(
                         let _ = runtime.execute_script("timers.js", timer_js);
                         let op_state_mut = runtime.op_state();
                         let mut state_mut = op_state_mut.borrow_mut();
-                        if let Some(queue_mut) = state_mut.try_borrow_mut::<super::timer::TimerQueue>() {
+                        if let Some(queue_mut) =
+                            state_mut.try_borrow_mut::<super::timer::TimerQueue>()
+                        {
                             queue_mut.mark_delay_zero_fired();
                         }
                     }
@@ -633,14 +674,19 @@ fn execute_scripts_with_timeout(
         }
 
         // Flush pending mutation observer callbacks after timer drainage
-        let _ = runtime.execute_script("mutation_flush_timers.js",
-            "if (typeof _deliverPendingMutations === 'function') _deliverPendingMutations();"
+        let _ = runtime.execute_script(
+            "mutation_flush_timers.js",
+            "if (typeof _deliverPendingMutations === 'function') _deliverPendingMutations();",
         );
+
+        // Drain structural mutations before serializing DOM
+        let mutations = dom.borrow_mut().drain_structural_mutations();
 
         // Serialize DOM back to HTML
         let output = dom.borrow().to_html();
         *lock.lock() = ThreadResult {
             dom_html: Some(output),
+            mutations,
             error: None,
         };
     });
@@ -650,23 +696,33 @@ fn execute_scripts_with_timeout(
     let wait_result = cvar_caller.wait_for(&mut guard, Duration::from_millis(timeout_ms));
 
     if guard.dom_html.is_some() {
-        return guard.dom_html.clone();
+        let html = guard.dom_html.clone();
+        let mutations = std::mem::take(&mut guard.mutations);
+        return html.map(|h| (h, mutations));
     }
 
     if wait_result.timed_out() {
         // Signal termination and wait grace period
         terminated.store(true, Ordering::SeqCst);
-        eprintln!("[JS] Execution timed out after {}ms, waiting for thread to finish...", timeout_ms);
+        tracing::warn!(
+            "[JS] Execution timed out after {}ms, waiting for thread to finish...",
+            timeout_ms
+        );
 
-        let grace_result = cvar_caller.wait_for(&mut guard, Duration::from_millis(THREAD_JOIN_GRACE_MS));
+        let grace_result =
+            cvar_caller.wait_for(&mut guard, Duration::from_millis(THREAD_JOIN_GRACE_MS));
 
         if grace_result.timed_out() {
-            eprintln!("[JS] Thread did not finish within grace period, returning original HTML");
+            tracing::warn!(
+                "[JS] Thread did not finish within grace period, returning original HTML"
+            );
             return None;
         }
     }
 
-    guard.dom_html.clone()
+    let html = guard.dom_html.clone();
+    let mutations = std::mem::take(&mut guard.mutations);
+    html.map(|h| (h, mutations))
 }
 
 // ==================== CDP Evaluate Result Types ====================
@@ -704,13 +760,15 @@ pub fn evaluate_js_expression(
     // 2. Create a V8 context with DOM shims
     // 3. Execute the expression
     // 4. Serialize the result
-    
+
     // For now, return a stub that indicates the expression was received
     // This allows CDP clients to connect without crashing
     EvaluateResult {
         r#type: "undefined".to_string(),
         value: "null".to_string(),
-        description: Some("JS evaluation stub - full implementation requires V8 context".to_string()),
+        description: Some(
+            "JS evaluation stub - full implementation requires V8 context".to_string(),
+        ),
         subtype: None,
         exception_details: None,
     }
@@ -732,18 +790,18 @@ pub async fn execute_js(
     sandbox: Option<&SandboxPolicy>,
     user_agent: &str,
     session: Option<Arc<SessionStore>>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Vec<super::dom::StructuralMutation>)> {
     let sandbox = sandbox.cloned().unwrap_or_default();
 
     // If JS is disabled by sandbox, return original HTML immediately
     if sandbox.js_mode == JsSandboxMode::Disabled {
-        return Ok(html.to_string());
+        return Ok((html.to_string(), Vec::new()));
     }
 
     // Parse base URL
     let base = match Url::parse(base_url) {
         Ok(u) => u,
-        Err(_) => return Ok(html.to_string()),
+        Err(_) => return Ok((html.to_string(), Vec::new())),
     };
 
     // Extract scripts from HTML (inline + external)
@@ -752,7 +810,12 @@ pub async fn execute_js(
     // Fetch external scripts asynchronously
     const MAX_EXTERNAL_SCRIPT_SIZE: usize = 200_000;
     const EXTERNAL_FETCH_TIMEOUT_MS: u64 = 5_000;
-    let external = fetch_external_scripts(external_urls, MAX_EXTERNAL_SCRIPT_SIZE, EXTERNAL_FETCH_TIMEOUT_MS).await;
+    let external = fetch_external_scripts(
+        external_urls,
+        MAX_EXTERNAL_SCRIPT_SIZE,
+        EXTERNAL_FETCH_TIMEOUT_MS,
+    )
+    .await;
     scripts.extend(external);
 
     // Apply sandbox-configurable script limits
@@ -765,10 +828,10 @@ pub async fn execute_js(
 
     // If no scripts, return original HTML
     if scripts.is_empty() {
-        return Ok(html.to_string());
+        return Ok((html.to_string(), Vec::new()));
     }
 
-    eprintln!(
+    tracing::debug!(
         "[JS] Found {} inline script(s) to execute for {}",
         scripts.len(),
         base.as_str()
@@ -797,10 +860,10 @@ pub async fn execute_js(
     );
 
     match result {
-        Some(modified_html) => Ok(modified_html),
+        Some((modified_html, mutations)) => Ok((modified_html, mutations)),
         None => {
             // Timeout or error - return original HTML
-            Ok(html.to_string())
+            Ok((html.to_string(), Vec::new()))
         }
     }
 }
@@ -815,7 +878,8 @@ mod tests {
 
     #[test]
     fn test_extract_scripts_empty_html() {
-        let (scripts, urls) = extract_scripts("<html></html>", &Url::parse("https://example.com").unwrap());
+        let (scripts, urls) =
+            extract_scripts("<html></html>", &Url::parse("https://example.com").unwrap());
         assert!(scripts.is_empty());
         assert!(urls.is_empty());
     }
@@ -823,7 +887,7 @@ mod tests {
     #[test]
     fn test_extract_scripts_no_scripts() {
         let html = r#"<html><body><p>Hello</p></body></html>"#;
-        let (scripts, urls) = extract_scripts(html, &Url::parse("https://example.com").unwrap());
+        let (scripts, _urls) = extract_scripts(html, &Url::parse("https://example.com").unwrap());
         assert!(scripts.is_empty());
         assert!(urls.is_empty());
     }
@@ -862,7 +926,7 @@ mod tests {
                 <script>inline code</script>
             </body></html>
         "#;
-        let (scripts, urls) = extract_scripts(html, &Url::parse("https://example.com").unwrap());
+        let (scripts, _urls) = extract_scripts(html, &Url::parse("https://example.com").unwrap());
         assert_eq!(scripts.len(), 1);
         assert!(scripts[0].code.contains("inline code"));
         assert_eq!(urls.len(), 1); // external URL collected but not fetched
@@ -919,7 +983,8 @@ export function hello() {}</script>
         }
         scripts_html.push_str("</body></html>");
 
-        let (scripts, _urls) = extract_scripts(&scripts_html, &Url::parse("https://example.com").unwrap());
+        let (scripts, _urls) =
+            extract_scripts(&scripts_html, &Url::parse("https://example.com").unwrap());
         assert_eq!(scripts.len(), MAX_SCRIPTS);
     }
 
@@ -954,7 +1019,9 @@ export function hello() {}</script>
     fn test_is_analytics_script_not_analytics() {
         assert!(!is_analytics_script("function doSomething() { return 1; }"));
         assert!(!is_analytics_script("const app = { name: 'MyApp' };"));
-        assert!(!is_analytics_script("document.querySelector('.btn').click();"));
+        assert!(!is_analytics_script(
+            "document.querySelector('.btn').click();"
+        ));
     }
 
     #[test]
@@ -983,14 +1050,19 @@ export function hello() {}</script>
     #[tokio::test]
     async fn test_execute_js_no_scripts() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = execute_js(html, "https://example.com", 100, None, "test-ua", None).await.unwrap();
+        let (result, _mutations) =
+            execute_js(html, "https://example.com", 100, None, "test-ua", None)
+                .await
+                .unwrap();
         assert_eq!(result, html);
     }
 
     #[tokio::test]
     async fn test_execute_js_invalid_url() {
         let html = "<html><body><p>Hello</p></body></html>";
-        let result = execute_js(html, "not-a-url", 100, None, "test-ua", None).await.unwrap();
+        let (result, _mutations) = execute_js(html, "not-a-url", 100, None, "test-ua", None)
+            .await
+            .unwrap();
         assert_eq!(result, html);
     }
 
@@ -1001,7 +1073,10 @@ export function hello() {}</script>
                 <script>gtag('event', 'click');</script>
             </body></html>
         "#;
-        let result = execute_js(html, "https://example.com", 100, None, "test-ua", None).await.unwrap();
+        let (result, _mutations) =
+            execute_js(html, "https://example.com", 100, None, "test-ua", None)
+                .await
+                .unwrap();
         assert!(result.contains("<html>"));
     }
 
@@ -1020,16 +1095,22 @@ export function hello() {}</script>
     #[test]
     fn test_is_problematic_script_not_flagged() {
         // These are standard web APIs — they should NOT be flagged
-        assert!(!is_problematic_script("element.addEventListener('click', handler)"));
+        assert!(!is_problematic_script(
+            "element.addEventListener('click', handler)"
+        ));
         assert!(!is_problematic_script("setInterval(function() {}, 100)"));
         assert!(!is_problematic_script("requestAnimationFrame(render)"));
-        assert!(!is_problematic_script("new MutationObserver(function() {})"));
+        assert!(!is_problematic_script(
+            "new MutationObserver(function() {})"
+        ));
     }
 
     #[test]
     fn test_is_problematic_script_destructive() {
         // These ARE destructive and should be flagged
-        assert!(is_problematic_script("document.write('overwrites everything')"));
+        assert!(is_problematic_script(
+            "document.write('overwrites everything')"
+        ));
         assert!(is_problematic_script("document.writeln('content')"));
     }
 
@@ -1047,7 +1128,9 @@ export function hello() {}</script>
     #[test]
     fn test_is_problematic_script_safe_code() {
         // These should NOT be flagged as problematic
-        assert!(!is_problematic_script("function add(a, b) { return a + b; }"));
+        assert!(!is_problematic_script(
+            "function add(a, b) { return a + b; }"
+        ));
         assert!(!is_problematic_script("const x = 1;"));
         assert!(!is_problematic_script("document.body.innerHTML = 'Hello';"));
     }
@@ -1060,7 +1143,222 @@ export function hello() {}</script>
                 <script>document.body.innerHTML = 'Safe';</script>
             </body></html>
         "#;
-        let result = execute_js(html, "https://example.com", 100, None, "test-ua", None).await.unwrap();
+        let (result, _mutations) =
+            execute_js(html, "https://example.com", 100, None, "test-ua", None)
+                .await
+                .unwrap();
         assert!(result.contains("Safe"));
     }
+
+    // ==================== Module Transform Tests ====================
+
+    #[test]
+    fn test_transform_module_removes_import_default() {
+        let code = "import foo from './bar.js';\nconsole.log(foo);";
+        let result = transform_module_syntax(code);
+        assert!(!result.contains("import "));
+        assert!(result.contains("console.log(foo);"));
+    }
+
+    #[test]
+    fn test_transform_module_removes_named_import() {
+        let code = "import { useState, useEffect } from 'react';\nconst [x, setX] = useState(0);";
+        let result = transform_module_syntax(code);
+        assert!(!result.contains("import "));
+        assert!(result.contains("useState(0)"));
+    }
+
+    #[test]
+    fn test_transform_module_removes_side_effect_import() {
+        let code = "import './polyfill.js';\nconsole.log('done');";
+        let result = transform_module_syntax(code);
+        assert!(!result.contains("import "));
+        assert!(result.contains("console.log('done')"));
+    }
+
+    #[test]
+    fn test_transform_module_dynamic_import_preserved() {
+        let code = "const mod = import('./module.js');";
+        let result = transform_module_syntax(code);
+        // Dynamic import() is a function call, not a statement import
+        assert!(result.contains("import('./module.js')"));
+    }
+
+    #[test]
+    fn test_transform_module_export_default() {
+        let code = "export default function App() { return 1; }";
+        let result = transform_module_syntax(code);
+        assert!(!result.contains("export"));
+        assert!(result.contains("function App()"));
+    }
+
+    #[test]
+    fn test_transform_module_export_const() {
+        let code = "export const VERSION = '1.0';";
+        let result = transform_module_syntax(code);
+        assert!(result.contains("const VERSION = '1.0';"));
+        assert!(!result.contains("export"));
+    }
+
+    #[test]
+    fn test_transform_module_export_function() {
+        let code = "export function hello() { return 'world'; }";
+        let result = transform_module_syntax(code);
+        assert!(result.contains("function hello()"));
+        assert!(!result.contains("export"));
+    }
+
+    #[test]
+    fn test_transform_module_export_class() {
+        let code = "export class MyComponent { render() {} }";
+        let result = transform_module_syntax(code);
+        assert!(result.contains("class MyComponent"));
+        assert!(!result.contains("export"));
+    }
+
+    #[test]
+    fn test_transform_module_export_let_var() {
+        let code = "export let count = 0;\nexport var name = 'test';";
+        let result = transform_module_syntax(code);
+        assert!(result.contains("let count = 0;"));
+        assert!(result.contains("var name = 'test';"));
+        assert!(!result.contains("export"));
+    }
+
+    #[test]
+    fn test_transform_module_export_list() {
+        let code = "export { foo, bar };";
+        let result = transform_module_syntax(code);
+        assert!(result.contains("{ foo, bar }"));
+        assert!(!result.contains("export"));
+    }
+
+    #[test]
+    fn test_transform_module_preserves_plain_code() {
+        let code = "const x = 1;\nfunction add(a, b) { return a + b; }";
+        let result = transform_module_syntax(code);
+        assert_eq!(result.trim(), code);
+    }
+
+    #[test]
+    fn test_transform_module_empty_input() {
+        let result = transform_module_syntax("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_transform_module_mixed() {
+        let code = r#"import { h } from 'preact';
+import styles from './styles.css';
+const App = () => h('div', null, 'Hello');
+export default App;
+export const NAME = 'App';"#;
+        let result = transform_module_syntax(code);
+        assert!(!result.contains("import "));
+        assert!(!result.contains("export "));
+        assert!(result.contains("const App"));
+        assert!(result.contains("const NAME"));
+    }
+
+    // ==================== Script Filtering Edge Cases ====================
+
+    #[test]
+    fn test_analytics_not_triggered_by_partial_match() {
+        // "post" should not match "posthog"
+        assert!(!is_analytics_script("const post = getPost();"));
+    }
+
+    #[test]
+    fn test_analytics_hotjar_variations() {
+        assert!(is_analytics_script("hj('trigger', 'my-trigger');"));
+        assert!(is_analytics_script("hotjar.identify({ id: 123 });"));
+    }
+
+    #[test]
+    fn test_analytics_posthog() {
+        assert!(is_analytics_script(
+            "posthog.init('phc_xxx', { api_host: 'https://app.posthog.com' });"
+        ));
+        assert!(is_analytics_script("posthog.capture('event');"));
+    }
+
+    #[test]
+    fn test_problematic_new_function() {
+        assert!(is_problematic_script("new Function('return this')()"));
+    }
+
+    #[test]
+    fn test_problematic_document_write() {
+        assert!(is_problematic_script(
+            "document.write('<h1>overwrites</h1>')"
+        ));
+        assert!(is_problematic_script("document.writeln('text')"));
+    }
+
+    #[test]
+    fn test_not_problematic_function_constructor() {
+        // "new function(" (lowercase f) is the pattern, not "new Function("
+        // But since we lowercase first, this should match
+        // Actually "new function(" with lowercase is a named function expression
+        // This is a legitimate pattern and should NOT be flagged
+        assert!(!is_problematic_script("const obj = new MyClass();"));
+    }
+
+    #[test]
+    fn test_extract_scripts_module_type() {
+        let html = r#"<html><body><script type="module">import { x } from './y.js';
+export const z = x + 1;</script></body></html>"#;
+        let (scripts, _urls) = extract_scripts(html, &Url::parse("https://example.com").unwrap());
+        assert_eq!(scripts.len(), 1);
+        assert!(!scripts[0].code.contains("import "));
+        assert!(!scripts[0].code.contains("export "));
+        assert!(scripts[0].code.contains("const z = x + 1;"));
+    }
+
+    #[test]
+    fn test_extract_scripts_external_url_resolution() {
+        let html = r#"<html><body><script src="/js/app.js"></script></body></html>"#;
+        let (_, urls) = extract_scripts(html, &Url::parse("https://example.com").unwrap());
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0], "https://example.com/js/app.js");
+    }
+
+    #[test]
+    fn test_extract_scripts_external_relative_url() {
+        let html = r#"<html><body><script src="bundle.js"></script></body></html>"#;
+        let (_, urls) = extract_scripts(html, &Url::parse("https://example.com/page/").unwrap());
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0], "https://example.com/page/bundle.js");
+    }
+
+    #[test]
+    fn test_extract_scripts_max_external_limit() {
+        let mut html = String::from("<html><body>");
+        for i in 0..10 {
+            html.push_str(&format!("<script src=\"script{}.js\"></script>", i));
+        }
+        html.push_str("</body></html>");
+        let (_, urls) = extract_scripts(&html, &Url::parse("https://example.com").unwrap());
+        assert!(urls.len() <= 5);
+    }
+
+    #[test]
+    fn test_extract_scripts_inline_before_external() {
+        let html = r#"<html><body>
+            <script>var a = 1;</script>
+            <script src="ext.js"></script>
+            <script>var b = 2;</script>
+        </body></html>"#;
+        let (scripts, _urls) = extract_scripts(html, &Url::parse("https://example.com").unwrap());
+        assert_eq!(scripts.len(), 2);
+        assert_eq!(urls.len(), 1);
+        // Inline scripts should be in order
+        assert!(scripts[0].code.contains("var a = 1"));
+        assert!(scripts[1].code.contains("var b = 2"));
+    }
+
+    // ==================== execute_js Integration ====================
+    // NOTE: V8-based integration tests run individually but crash when batched
+    // due to deno_core's V8 platform not being safe for multi-init in a
+    // single test process. Run these with: cargo test -p pardus-core --features js -- <test_name>
 }

@@ -4,23 +4,18 @@
 //! on the in-memory DOM, execute inline event handlers (onclick, onchange, etc.),
 //! and return the modified HTML as a new page state.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use std::{cell::RefCell, rc::Rc, sync::Arc, thread, time::Duration};
 
 use deno_core::*;
 use parking_lot::{Condvar, Mutex};
 use scraper::{Html, Selector};
 use url::Url;
 
-use crate::interact::actions::InteractionResult;
-use crate::interact::form::FormState;
-use crate::interact::scroll::ScrollDirection;
-use crate::js::dom::DomDocument;
-use crate::js::extension::pardus_dom;
-use crate::session::SessionStore;
+use crate::{
+    interact::{actions::InteractionResult, form::FormState, scroll::ScrollDirection},
+    js::{dom::DomDocument, extension::pardus_dom},
+    session::SessionStore,
+};
 
 // ==================== Configuration ====================
 
@@ -181,15 +176,13 @@ fn execute_interaction_thread(
 
     let _handle = thread::spawn(move || {
         let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            execute_interaction_inner(
-                html, base_url, interaction_js, user_agent, session,
-            )
+            execute_interaction_inner(html, base_url, interaction_js, user_agent, session)
         }));
 
         let output = match res {
             Ok(Ok(output)) => output,
             Ok(Err(e)) => {
-                eprintln!("[js_interact] Error: {:#}", e);
+                tracing::warn!("[js_interact] Error: {:#}", e);
                 InteractionThreadResult {
                     html: None,
                     click_prevented: false,
@@ -199,7 +192,7 @@ fn execute_interaction_thread(
                 }
             }
             Err(panic_val) => {
-                eprintln!("[js_interact] Thread panicked: {:?}", panic_val);
+                tracing::error!("[js_interact] Thread panicked: {:?}", panic_val);
                 InteractionThreadResult {
                     html: None,
                     click_prevented: false,
@@ -331,7 +324,7 @@ pub async fn js_click(
                     return Ok(InteractionResult::ElementNotFound {
                         selector: selector.to_string(),
                         reason: "JS execution failed".to_string(),
-                    })
+                    });
                 }
             };
 
@@ -397,8 +390,7 @@ pub async fn js_type(
 
     let selector_json =
         serde_json::to_string(selector).unwrap_or_else(|_| format!("'{}'", selector));
-    let value_json =
-        serde_json::to_string(value).unwrap_or_else(|_| format!("'{}'", value));
+    let value_json = serde_json::to_string(value).unwrap_or_else(|_| format!("'{}'", value));
 
     let interaction_js = format!(
         r#"
@@ -535,7 +527,7 @@ pub async fn js_submit(
                     return Ok(InteractionResult::ElementNotFound {
                         selector: form_selector.to_string(),
                         reason: "JS execution failed".to_string(),
-                    })
+                    });
                 }
             };
 
@@ -620,7 +612,7 @@ pub async fn js_scroll(
                     return Ok(InteractionResult::ElementNotFound {
                         selector: String::new(),
                         reason: "JS execution failed".to_string(),
-                    })
+                    });
                 }
             };
 
@@ -671,7 +663,8 @@ pub async fn js_dispatch_event(
             let uses_custom = json.contains("\"detail\"");
             let constructor = if uses_custom { "CustomEvent" } else { "Event" };
             format!(
-                "var initOpts = {}; try {{ initOpts = JSON.parse({}); }} catch(e) {{}} new {}({}, initOpts)",
+                "var initOpts = {}; try {{ initOpts = JSON.parse({}); }} catch(e) {{}} new {}({}, \
+                 initOpts)",
                 "{}",
                 serde_json::to_string(json).unwrap_or_else(|_| "null".to_string()),
                 constructor,
@@ -704,18 +697,16 @@ pub async fn js_dispatch_event(
     );
 
     match thread_result {
-        Some(result) => {
-            match result.html {
-                Some(modified_html) => {
-                    let new_page = crate::Page::from_html(&modified_html, &page.url);
-                    Ok(InteractionResult::Navigated(new_page))
-                }
-                None => Ok(InteractionResult::ElementNotFound {
-                    selector: selector.to_string(),
-                    reason: "JS execution failed".to_string(),
-                }),
+        Some(result) => match result.html {
+            Some(modified_html) => {
+                let new_page = crate::Page::from_html(&modified_html, &page.url);
+                Ok(InteractionResult::Navigated(new_page))
             }
-        }
+            None => Ok(InteractionResult::ElementNotFound {
+                selector: selector.to_string(),
+                reason: "JS execution failed".to_string(),
+            }),
+        },
         None => Ok(InteractionResult::EventDispatched {
             selector: selector.to_string(),
             event_type: event_type.to_string(),
@@ -730,10 +721,7 @@ mod tests {
     use super::*;
 
     fn test_page_html(body_content: &str) -> String {
-        format!(
-            "<html><head></head><body>{}</body></html>",
-            body_content
-        )
+        format!("<html><head></head><body>{}</body></html>", body_content)
     }
 
     fn run_interaction(html: &str, interaction_js: &str) -> Option<String> {
@@ -753,7 +741,7 @@ mod tests {
     #[test]
     fn test_window_location_href_detection() {
         let html = test_page_html(
-            r#"<button id="btn" onclick="document.getElementById('out').textContent='fired'; window.location.href='/new-page'">Go</button><span id="out">waiting</span>"#
+            r#"<button id="btn" onclick="document.getElementById('out').textContent='fired'; window.location.href='/new-page'">Go</button><span id="out">waiting</span>"#,
         );
 
         let interaction_js = r#"
@@ -772,8 +760,8 @@ mod tests {
 
         assert!(result.is_some());
         let r = result.unwrap();
-        eprintln!("[DEBUG] navigation_href: {:?}", r.navigation_href);
-        eprintln!("[DEBUG] html: {:?}", r.html);
+        tracing::debug!("[DEBUG] navigation_href: {:?}", r.navigation_href);
+        tracing::debug!("[DEBUG] html: {:?}", r.html);
         assert_eq!(
             r.navigation_href.as_deref(),
             Some("/new-page"),
@@ -784,7 +772,7 @@ mod tests {
     #[test]
     fn test_location_assign_detection() {
         let html = test_page_html(
-            r#"<button id="btn" onclick="location.assign('/assign-target')">Go</button>"#
+            r#"<button id="btn" onclick="location.assign('/assign-target')">Go</button>"#,
         );
 
         let interaction_js = r#"
@@ -813,7 +801,7 @@ mod tests {
     #[test]
     fn test_location_replace_detection() {
         let html = test_page_html(
-            r#"<button id="btn" onclick="location.replace('/replace-target')">Go</button>"#
+            r#"<button id="btn" onclick="location.replace('/replace-target')">Go</button>"#,
         );
 
         let interaction_js = r#"
@@ -841,9 +829,7 @@ mod tests {
 
     #[test]
     fn test_location_reload_no_navigation() {
-        let html = test_page_html(
-            r#"<button id="btn" onclick="location.reload()">Go</button>"#
-        );
+        let html = test_page_html(r#"<button id="btn" onclick="location.reload()">Go</button>"#);
 
         let interaction_js = r#"
             var btn = document.querySelector('#btn');
@@ -862,8 +848,7 @@ mod tests {
         assert!(result.is_some());
         let r = result.unwrap();
         assert_eq!(
-            r.navigation_href,
-            None,
+            r.navigation_href, None,
             "location.reload() should not trigger navigation detection"
         );
     }
@@ -871,7 +856,7 @@ mod tests {
     #[test]
     fn test_location_href_full_url_detection() {
         let html = test_page_html(
-            r#"<script>window.location.href = 'https://other-site.com/path';</script>"#
+            r#"<script>window.location.href = 'https://other-site.com/path';</script>"#,
         );
 
         let interaction_js = "";
@@ -898,7 +883,7 @@ mod tests {
     fn test_js_click_modifies_inner_html() {
         // Use textContent instead of innerHTML to avoid HTML parsing issues in attribute values
         let html = test_page_html(
-            r#"<button id="btn" onclick="document.getElementById('output').textContent='Dynamic'"></button><div id="output"><p>Static</p></div>"#
+            r#"<button id="btn" onclick="document.getElementById('output').textContent='Dynamic'"></button><div id="output"><p>Static</p></div>"#,
         );
 
         let interaction_js = r#"
@@ -932,9 +917,7 @@ mod tests {
 
     #[test]
     fn test_js_click_link_default_not_prevented() {
-        let html = test_page_html(
-            r#"<a id="link" href="https://example.com/page2">Link</a>"#
-        );
+        let html = test_page_html(r#"<a id="link" href="https://example.com/page2">Link</a>"#);
 
         let interaction_js = r#"
             var link = document.querySelector('#link');
@@ -969,9 +952,7 @@ mod tests {
 
     #[test]
     fn test_js_click_link_preventdefault_in_interaction_js() {
-        let html = test_page_html(
-            r#"<a id="link" href="https://example.com/page2">Link</a>"#
-        );
+        let html = test_page_html(r#"<a id="link" href="https://example.com/page2">Link</a>"#);
 
         // Test that preventDefault works when called directly in interaction JS
         let interaction_js = r#"
@@ -1037,7 +1018,7 @@ mod tests {
     #[test]
     fn test_js_type_triggers_onchange() {
         let html = test_page_html(
-            r#"<input id="field" type="text" onchange="document.getElementById('status').textContent='changed'" /><span id="status">unchanged</span>"#
+            r#"<input id="field" type="text" onchange="document.getElementById('status').textContent='changed'" /><span id="status">unchanged</span>"#,
         );
 
         let interaction_js = r#"
@@ -1062,7 +1043,7 @@ mod tests {
     #[test]
     fn test_js_type_triggers_oninput() {
         let html = test_page_html(
-            r#"<input id="field" type="text" oninput="document.getElementById('mirror').textContent=this.getAttribute('value')" /><span id="mirror">empty</span>"#
+            r#"<input id="field" type="text" oninput="document.getElementById('mirror').textContent=this.getAttribute('value')" /><span id="mirror">empty</span>"#,
         );
 
         let interaction_js = r#"
@@ -1110,7 +1091,7 @@ mod tests {
     #[test]
     fn test_js_scroll_triggers_onscroll() {
         let html = test_page_html(
-            r#"<body onscroll="document.getElementById('log').textContent='scrolled'"><div id="log">not scrolled</div></body>"#
+            r#"<body onscroll="document.getElementById('log').textContent='scrolled'"><div id="log">not scrolled</div></body>"#,
         );
 
         let interaction_js = r#"
@@ -1133,7 +1114,7 @@ mod tests {
     #[test]
     fn test_inline_onclick_registered_and_fires() {
         let html = test_page_html(
-            r#"<button id="btn" onclick="document.getElementById('out').textContent='fired'"></button><span id="out">waiting</span>"#
+            r#"<button id="btn" onclick="document.getElementById('out').textContent='fired'"></button><span id="out">waiting</span>"#,
         );
 
         let interaction_js = r#"
@@ -1154,7 +1135,7 @@ mod tests {
     #[test]
     fn test_inline_onchange_registered_and_fires() {
         let html = test_page_html(
-            r#"<input id="inp" type="text" onchange="document.getElementById('out').textContent='changed'" /><span id="out">waiting</span>"#
+            r#"<input id="inp" type="text" onchange="document.getElementById('out').textContent='changed'" /><span id="out">waiting</span>"#,
         );
 
         let interaction_js = r#"
@@ -1178,7 +1159,7 @@ mod tests {
     #[test]
     fn test_multiple_inline_handlers() {
         let html = test_page_html(
-            r#"<button id="btn1" onclick="document.getElementById('out').textContent='btn1'">1</button><button id="btn2" onclick="document.getElementById('out').textContent='btn2'">2</button><span id="out">none</span>"#
+            r#"<button id="btn1" onclick="document.getElementById('out').textContent='btn1'">1</button><button id="btn2" onclick="document.getElementById('out').textContent='btn2'">2</button><span id="out">none</span>"#,
         );
 
         let interaction_js = r#"
@@ -1204,7 +1185,7 @@ mod tests {
     fn test_window_location_href_detection_inline() {
         // Step 1: Test that inline handler with window.location.href fires
         let html = test_page_html(
-            r#"<button id="btn" onclick="document.getElementById('out').textContent='fired'; window.location.href='/new-page'">Go</button><span id="out">waiting</span>"#
+            r#"<button id="btn" onclick="document.getElementById('out').textContent='fired'; window.location.href='/new-page'">Go</button><span id="out">waiting</span>"#,
         );
 
         let interaction_js = r#"
@@ -1223,8 +1204,8 @@ mod tests {
 
         assert!(result.is_some());
         let r = result.unwrap();
-        eprintln!("[DEBUG] navigation_href: {:?}", r.navigation_href);
-        eprintln!("[DEBUG] html: {:?}", r.html);
+        tracing::debug!("[DEBUG] navigation_href: {:?}", r.navigation_href);
+        tracing::debug!("[DEBUG] html: {:?}", r.html);
         assert_eq!(
             r.navigation_href.as_deref(),
             Some("/new-page"),
@@ -1237,7 +1218,7 @@ mod tests {
     #[test]
     fn test_js_submit_prevented() {
         let html = test_page_html(
-            r#"<form id="myform" onsubmit="event.preventDefault(); document.getElementById('log').textContent='prevented'"><input name="q" value="" /><button type="submit">Go</button></form><span id="log">waiting</span>"#
+            r#"<form id="myform" onsubmit="event.preventDefault(); document.getElementById('log').textContent='prevented'"><input name="q" value="" /><button type="submit">Go</button></form><span id="log">waiting</span>"#,
         );
 
         let interaction_js = r#"
@@ -1264,7 +1245,10 @@ mod tests {
         assert!(result.is_some());
         let r = result.unwrap();
         assert_eq!(r.submit_prevented, Some(true), "Submit should be prevented");
-        assert!(r.html.unwrap().contains("prevented"), "Handler should have modified DOM");
+        assert!(
+            r.html.unwrap().contains("prevented"),
+            "Handler should have modified DOM"
+        );
     }
 
     // ==================== No-op / Edge Case Tests ====================
@@ -1334,7 +1318,11 @@ mod tests {
         match result.unwrap() {
             InteractionResult::Navigated(new_page) => {
                 let html = new_page.html.html();
-                assert!(html.contains("changed"), "Expected 'changed' in output, got: {}", html);
+                assert!(
+                    html.contains("changed"),
+                    "Expected 'changed' in output, got: {}",
+                    html
+                );
             }
             other => panic!("Expected Navigated, got: {:?}", other),
         }
@@ -1352,7 +1340,11 @@ mod tests {
         match result.unwrap() {
             InteractionResult::Navigated(new_page) => {
                 let html = new_page.html.html();
-                assert!(html.contains("focused"), "Expected 'focused' in output, got: {}", html);
+                assert!(
+                    html.contains("focused"),
+                    "Expected 'focused' in output, got: {}",
+                    html
+                );
             }
             other => panic!("Expected Navigated, got: {:?}", other),
         }
@@ -1412,7 +1404,11 @@ mod tests {
         match result.unwrap() {
             InteractionResult::Navigated(new_page) => {
                 let html = new_page.html.html();
-                assert!(html.contains("blurred"), "Expected 'blurred' in output, got: {}", html);
+                assert!(
+                    html.contains("blurred"),
+                    "Expected 'blurred' in output, got: {}",
+                    html
+                );
             }
             other => panic!("Expected Navigated, got: {:?}", other),
         }

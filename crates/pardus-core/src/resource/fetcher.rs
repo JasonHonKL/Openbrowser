@@ -1,13 +1,16 @@
 //! HTTP resource fetcher with optimized client and HTTP cache compliance
 
-use super::ResourceConfig;
-use crate::cache::{CachedResource, ResourceCache};
-use crate::push::PushCache;
+use std::{sync::Arc, time::Instant};
+
 use bytes::Bytes;
 use rquest::header::HeaderMap;
-use std::sync::Arc;
-use std::time::Instant;
-use tracing::{trace, instrument};
+use tracing::{instrument, trace};
+
+use super::ResourceConfig;
+use crate::{
+    cache::{CachedResource, ResourceCache},
+    push::PushCache,
+};
 
 /// Fetch options
 #[derive(Debug, Clone)]
@@ -80,8 +83,14 @@ impl FetchResult {
         self.error.is_none() && self.status >= 200 && self.status < 300
     }
 
-    pub fn is_not_modified(&self) -> bool {
-        self.status == 304
+    pub fn is_not_modified(&self) -> bool { self.status == 304 }
+
+    /// Convert response headers to `Vec<(String, String)>` for NetworkLog compatibility.
+    pub fn response_headers_vec(&self) -> Vec<(String, String)> {
+        self.response_headers
+            .iter()
+            .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
+            .collect()
     }
 }
 
@@ -93,9 +102,7 @@ pub struct ResourceFetcher {
 }
 
 impl ResourceFetcher {
-    pub fn new(client: rquest::Client, config: ResourceConfig) -> Self {
-        Self { client, config }
-    }
+    pub fn new(client: rquest::Client, config: ResourceConfig) -> Self { Self { client, config } }
 
     #[instrument(skip(self), level = "trace")]
     pub async fn fetch(&self, url: &str) -> FetchResult {
@@ -105,7 +112,8 @@ impl ResourceFetcher {
         match self.client.get(url).send().await {
             Ok(response) => {
                 let status = response.status().as_u16();
-                let content_type = response.headers()
+                let content_type = response
+                    .headers()
                     .get(rquest::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
@@ -116,14 +124,20 @@ impl ResourceFetcher {
                     Ok(body) => {
                         let elapsed = start.elapsed();
                         trace!("fetch complete: {} ({} bytes)", url, body.len());
-                        let mut result = FetchResult::success(url, status, body, content_type, elapsed.as_millis() as u64);
+                        let mut result = FetchResult::success(
+                            url,
+                            status,
+                            body,
+                            content_type,
+                            elapsed.as_millis() as u64,
+                        );
                         result.response_headers = headers;
                         result
                     }
-                    Err(e) => FetchResult::error(url, format!("body read error: {}", e))
+                    Err(e) => FetchResult::error(url, format!("body read error: {}", e)),
                 }
             }
-            Err(e) => FetchResult::error(url, format!("request error: {}", e))
+            Err(e) => FetchResult::error(url, format!("request error: {}", e)),
         }
     }
 
@@ -137,7 +151,8 @@ impl ResourceFetcher {
         match request.send().await {
             Ok(response) => {
                 let status = response.status().as_u16();
-                let content_type = response.headers()
+                let content_type = response
+                    .headers()
                     .get(rquest::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
@@ -147,7 +162,13 @@ impl ResourceFetcher {
                 match response.bytes().await {
                     Ok(body) => {
                         let elapsed = start.elapsed();
-                        let mut result = FetchResult::success(url, status, body, content_type, elapsed.as_millis() as u64);
+                        let mut result = FetchResult::success(
+                            url,
+                            status,
+                            body,
+                            content_type,
+                            elapsed.as_millis() as u64,
+                        );
                         result.response_headers = headers;
                         result
                     }
@@ -159,7 +180,11 @@ impl ResourceFetcher {
     }
 
     /// Fetch a URL with conditional request headers (for cache revalidation).
-    pub async fn fetch_conditional(&self, url: &str, conditional_headers: &HeaderMap) -> FetchResult {
+    pub async fn fetch_conditional(
+        &self,
+        url: &str,
+        conditional_headers: &HeaderMap,
+    ) -> FetchResult {
         let start = std::time::Instant::now();
         trace!("conditional fetch: {}", url);
 
@@ -171,7 +196,8 @@ impl ResourceFetcher {
         match request.send().await {
             Ok(response) => {
                 let status = response.status().as_u16();
-                let content_type = response.headers()
+                let content_type = response
+                    .headers()
                     .get(rquest::header::CONTENT_TYPE)
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
@@ -197,7 +223,13 @@ impl ResourceFetcher {
                 match response.bytes().await {
                     Ok(body) => {
                         let elapsed = start.elapsed();
-                        let mut result = FetchResult::success(url, status, body, content_type, elapsed.as_millis() as u64);
+                        let mut result = FetchResult::success(
+                            url,
+                            status,
+                            body,
+                            content_type,
+                            elapsed.as_millis() as u64,
+                        );
                         result.response_headers = headers;
                         result
                     }
@@ -217,7 +249,8 @@ impl ResourceFetcher {
 
     pub async fn content_length(&self, url: &str) -> Option<usize> {
         match self.client.head(url).send().await {
-            Ok(response) => response.headers()
+            Ok(response) => response
+                .headers()
                 .get(rquest::header::CONTENT_LENGTH)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse().ok()),
@@ -230,7 +263,11 @@ impl ResourceFetcher {
     /// If a valid entry exists in the push cache, returns it immediately
     /// without making an HTTP request. Otherwise falls through to a normal
     /// fetch and does NOT store the result in the push cache.
-    pub fn fetch_with_push_cache(&self, url: &str, push_cache: &PushCache) -> std::future::Ready<FetchResult> {
+    pub fn fetch_with_push_cache(
+        &self,
+        url: &str,
+        push_cache: &PushCache,
+    ) -> std::future::Ready<FetchResult> {
         if let Some(entry) = push_cache.get(url) {
             trace!("push cache hit for fetch: {}", url);
             let mut result = FetchResult::success(
@@ -247,7 +284,10 @@ impl ResourceFetcher {
 
         let url_owned = url.to_string();
         let _ = url_owned;
-        std::future::ready(FetchResult::error(&url_owned, "push cache miss, use fetch() instead"))
+        std::future::ready(FetchResult::error(
+            &url_owned,
+            "push cache miss, use fetch() instead",
+        ))
     }
 }
 
@@ -329,7 +369,8 @@ impl CachedFetcher {
                 let cond_result = self.fetcher.fetch_conditional(url, &cond_headers).await;
 
                 if cond_result.is_not_modified() {
-                    self.cache.update_from_304(url, &cond_result.response_headers);
+                    self.cache
+                        .update_from_304(url, &cond_result.response_headers);
                     if let Some(entry) = self.cache.get(url) {
                         let guard = entry.read().unwrap();
                         let cached = (*guard).clone();
@@ -361,17 +402,11 @@ impl CachedFetcher {
     }
 
     /// Fetch without caching (force bypass).
-    pub async fn fetch_bypass(&self, url: &str) -> FetchResult {
-        self.fetcher.fetch(url).await
-    }
+    pub async fn fetch_bypass(&self, url: &str) -> FetchResult { self.fetcher.fetch(url).await }
 
-    pub fn invalidate(&self, url: &str) {
-        self.cache.invalidate(url);
-    }
+    pub fn invalidate(&self, url: &str) { self.cache.invalidate(url); }
 
-    pub fn clear(&self) {
-        self.cache.clear();
-    }
+    pub fn clear(&self) { self.cache.clear(); }
 }
 
 enum CacheAction {

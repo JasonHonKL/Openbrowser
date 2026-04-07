@@ -1,7 +1,6 @@
 /target
 **/*.rs.bk
 **/*.bak
-Cargo.lock
 .DS_Store
 **/.DS_Store
 
@@ -29,8 +28,8 @@ web/dist/
 ai-agent/pardus-browser/node_modules/
 ai-agent/pardus-browser/dist/
 
-# Lockfiles
-**/package-lock.json
+# Lockfiles (committed for reproducibility)
+# If you need to regenerate: rm **/package-lock.json && npm install
 
 .env
 .env.*
@@ -38,3 +37,11 @@ ai-agent/pardus-browser/dist/
 
 # Research benchmark data
 research/
+bench-results/
+
+# Tool caches
+.ruff_cache/
+
+# AI coding assistant configs (local only)
+.opencode/
+.claude/

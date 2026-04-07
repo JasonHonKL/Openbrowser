@@ -1,9 +1,9 @@
 import { useState } from "react";
-import type { SemanticNode } from "../api/client";
+import type { SemanticNode, TreeStats } from "../api/client";
 
 interface Props {
   tree: SemanticNode | null;
-  stats: { landmarks: number; links: number; headings: number; actions: number; total_nodes: number } | null;
+  stats: TreeStats | null;
 }
 
 export function TreeViewer({ tree, stats }: Props) {

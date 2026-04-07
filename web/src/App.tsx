@@ -30,7 +30,8 @@ export default function App() {
           const treeData = await api.semanticTree();
           setTree(treeData.root);
           setStats(treeData.stats);
-        } catch {
+        } catch (e) {
+          console.error('Failed to fetch semantic tree:', e);
           setTree(null);
           setStats(null);
         }
@@ -38,8 +39,8 @@ export default function App() {
         setTree(null);
         setStats(null);
       }
-    } catch {
-      // server not reachable
+    } catch (e) {
+      console.error('Failed to refresh:', e);
     }
   }, []);
 

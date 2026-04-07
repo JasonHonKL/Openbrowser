@@ -3,18 +3,16 @@
 //! A Tab wraps a Page and maintains tab-specific state.
 //! Multiple tabs share the same App via Arc.
 
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::Instant;
-
-use crate::Page;
-use crate::app::App;
-use crate::config::BrowserConfig;
-use crate::interact::ElementHandle;
-use crate::semantic::tree::SemanticTree;
-use crate::navigation::graph::NavigationGraph;
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 use super::{TabId, TabState};
+use crate::{
+    Page, app::App, config::BrowserConfig, interact::ElementHandle,
+    navigation::graph::NavigationGraph, semantic::tree::SemanticTree,
+};
 
 /// A browser tab with independent page state
 ///
@@ -205,8 +203,8 @@ impl Tab {
     /// Load the page using a raw rquest client.
     pub async fn load_with_client(
         &mut self,
-        _client: &rquest::Client,
-        _network_log: &Arc<Mutex<pardus_debug::NetworkLog>>,
+        client: &rquest::Client,
+        network_log: &Arc<Mutex<pardus_debug::NetworkLog>>,
         config: &BrowserConfig,
         js_enabled: bool,
         wait_ms: u32,
@@ -214,7 +212,11 @@ impl Tab {
         self.state = TabState::Loading;
         self.last_active = Instant::now();
 
-        let app = Arc::new(App::new(config.clone()));
+        let app = Arc::new(App::from_client_and_log(
+            client.clone(),
+            config.clone(),
+            network_log.clone(),
+        )?);
 
         let result = if js_enabled {
             Page::from_url_with_js(&app, &self.url, wait_ms).await
@@ -252,7 +254,8 @@ impl Tab {
         self.state = TabState::Navigating;
         self.url = url.to_string();
         self.page = None;
-        self.load_with_client(client, network_log, config, js_enabled, wait_ms).await
+        self.load_with_client(client, network_log, config, js_enabled, wait_ms)
+            .await
     }
 
     /// Reload using a raw rquest client.
@@ -264,7 +267,14 @@ impl Tab {
     ) -> anyhow::Result<&Page> {
         self.state = TabState::Loading;
         self.page = None;
-        self.load_with_client(client, network_log, config, self.config.js_enabled, self.config.wait_ms).await
+        self.load_with_client(
+            client,
+            network_log,
+            config,
+            self.config.js_enabled,
+            self.config.wait_ms,
+        )
+        .await
     }
 
     /// Update the tab with a new page (e.g., after click navigation).
@@ -282,24 +292,16 @@ impl Tab {
     // -------------------------------------------------------------------
 
     /// Check if the tab can go back in history
-    pub fn can_go_back(&self) -> bool {
-        self.history_index > 0
-    }
+    pub fn can_go_back(&self) -> bool { self.history_index > 0 }
 
     /// Check if the tab can go forward in history
-    pub fn can_go_forward(&self) -> bool {
-        self.history_index < self.history.len() - 1
-    }
+    pub fn can_go_forward(&self) -> bool { self.history_index < self.history.len() - 1 }
 
     /// Get history length
-    pub fn history_len(&self) -> usize {
-        self.history.len()
-    }
+    pub fn history_len(&self) -> usize { self.history.len() }
 
     /// Mark tab as active (updates last_active timestamp)
-    pub fn activate(&mut self) {
-        self.last_active = Instant::now();
-    }
+    pub fn activate(&mut self) { self.last_active = Instant::now(); }
 
     /// Get formatted info for display
     pub fn info(&self) -> TabInfo {
@@ -323,11 +325,14 @@ impl Tab {
 
     /// Query the page for all elements matching a CSS selector.
     pub fn query_all(&self, selector: &str) -> Vec<ElementHandle> {
-        self.page.as_ref().map(|p| p.query_all(selector)).unwrap_or_default()
+        self.page
+            .as_ref()
+            .map(|p| p.query_all(selector))
+            .unwrap_or_default()
     }
 
     /// Get the semantic tree of the current page.
-    pub fn semantic_tree(&self) -> Option<SemanticTree> {
+    pub fn semantic_tree(&self) -> Option<Arc<SemanticTree>> {
         self.page.as_ref().map(|p| p.semantic_tree())
     }
 
@@ -338,7 +343,10 @@ impl Tab {
 
     /// Get all interactive elements from the current page.
     pub fn interactive_elements(&self) -> Vec<ElementHandle> {
-        self.page.as_ref().map(|p| p.interactive_elements()).unwrap_or_default()
+        self.page
+            .as_ref()
+            .map(|p| p.interactive_elements())
+            .unwrap_or_default()
     }
 
     /// Find an interactive element by its element ID (e.g., 1, 2, 3).
@@ -367,9 +375,7 @@ impl Tab {
     }
 
     /// Get memory usage in MB
-    pub fn memory_usage_mb(&self) -> usize {
-        self.memory_usage_bytes / 1024 / 1024
-    }
+    pub fn memory_usage_mb(&self) -> usize { self.memory_usage_bytes / 1024 / 1024 }
 
     /// Update memory usage estimate based on current page content
     pub fn update_memory_estimate(&mut self) {

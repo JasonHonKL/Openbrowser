@@ -503,4 +503,241 @@ mod tests {
         assert!(!is_url_safe("http://[fc00::1]/"));
         assert!(!is_url_safe("http://[fd00::1]/"));
     }
+
+    // ==================== FetchCacheMode Tests ====================
+
+    #[test]
+    fn test_fetch_cache_mode_from_str() {
+        assert_eq!(FetchCacheMode::from_str("no-store"), FetchCacheMode::NoStore);
+        assert_eq!(FetchCacheMode::from_str("force-cache"), FetchCacheMode::ForceCache);
+        assert_eq!(FetchCacheMode::from_str("only-if-cached"), FetchCacheMode::OnlyIfCached);
+        assert_eq!(FetchCacheMode::from_str("default"), FetchCacheMode::Default);
+        assert_eq!(FetchCacheMode::from_str(""), FetchCacheMode::Default);
+        assert_eq!(FetchCacheMode::from_str("invalid"), FetchCacheMode::Default);
+    }
+
+    #[test]
+    fn test_fetch_cache_mode_equality() {
+        assert_eq!(FetchCacheMode::Default, FetchCacheMode::Default);
+        assert_ne!(FetchCacheMode::NoStore, FetchCacheMode::ForceCache);
+        assert_ne!(FetchCacheMode::Default, FetchCacheMode::OnlyIfCached);
+    }
+
+    // ==================== FetchArgs Deserialization Tests ====================
+
+    #[test]
+    fn test_fetch_args_defaults() {
+        let json = r#"{"url":"https://example.com","method":""}"#;
+        let args: FetchArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.url, "https://example.com");
+        assert!(args.headers.is_empty());
+        assert!(args.body.is_none());
+        assert!(args.cache.is_none());
+    }
+
+    #[test]
+    fn test_fetch_args_full() {
+        let json = r#"{"url":"https://api.example.com/data","method":"POST","headers":{"content-type":"application/json"},"body":"{\"key\":\"value\"}","cache":"no-store"}"#;
+        let args: FetchArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.url, "https://api.example.com/data");
+        assert_eq!(args.method, "POST");
+        assert_eq!(args.headers.get("content-type").unwrap(), "application/json");
+        assert_eq!(args.body, Some("{\"key\":\"value\"}".to_string()));
+        assert_eq!(args.cache, Some("no-store".to_string()));
+    }
+
+    #[test]
+    fn test_fetch_args_empty_body() {
+        let json = r#"{"url":"https://example.com","method":"GET","body":null}"#;
+        let args: FetchArgs = serde_json::from_str(json).unwrap();
+        assert!(args.body.is_none());
+    }
+
+    // ==================== FetchResult Serialization Tests ====================
+
+    #[test]
+    fn test_fetch_result_serialization() {
+        let result = FetchResult {
+            ok: true,
+            status: 200,
+            status_text: "OK".to_string(),
+            headers: {
+                let mut h = HashMap::new();
+                h.insert("content-type".to_string(), "text/html".to_string());
+                h
+            },
+            body: "Hello".to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"ok\":true"));
+        assert!(json.contains("\"status\":200"));
+        assert!(json.contains("\"body\":\"Hello\""));
+    }
+
+    #[test]
+    fn test_fetch_result_error() {
+        let result = FetchResult {
+            ok: false,
+            status: 403,
+            status_text: "Forbidden".to_string(),
+            headers: HashMap::new(),
+            body: String::new(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"ok\":false"));
+        assert!(json.contains("\"status\":403"));
+    }
+
+    #[test]
+    fn test_fetch_result_network_error() {
+        let result = FetchResult {
+            ok: false,
+            status: 0,
+            status_text: "Network Error".to_string(),
+            headers: HashMap::new(),
+            body: String::new(),
+        };
+        assert_eq!(result.status, 0);
+        assert!(!result.ok);
+    }
+
+    // ==================== FetchRequest Tests ====================
+
+    #[test]
+    fn test_fetch_request_default_method() {
+        assert_eq!(default_method(), "GET");
+    }
+
+    #[test]
+    fn test_fetch_request_deserialization() {
+        let json = r#"{"url":"https://example.com"}"#;
+        let req: FetchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.url, "https://example.com");
+        assert_eq!(req.method, "GET");
+        assert!(req.headers.is_empty());
+        assert!(req.body.is_none());
+    }
+
+    #[test]
+    fn test_fetch_request_with_method() {
+        let json = r#"{"url":"https://example.com","method":"POST","body":"data"}"#;
+        let req: FetchRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.body, Some("data".to_string()));
+    }
+
+    // ==================== FetchResponse Tests ====================
+
+    #[test]
+    fn test_fetch_response_serialization_roundtrip() {
+        let resp = FetchResponse {
+            status: 200,
+            status_text: "OK".to_string(),
+            headers: {
+                let mut h = HashMap::new();
+                h.insert("content-type".to_string(), "text/plain".to_string());
+                h
+            },
+            body: "Hello World".to_string(),
+            ok: true,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let back: FetchResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.status, 200);
+        assert_eq!(back.body, "Hello World");
+        assert!(back.ok);
+    }
+
+    // ==================== FetchPolicy Tests ====================
+
+    #[test]
+    fn test_fetch_policy_default() {
+        let policy = FetchPolicy { blocked: false };
+        assert!(!policy.blocked);
+    }
+
+    #[test]
+    fn test_fetch_policy_blocked() {
+        let policy = FetchPolicy { blocked: true };
+        assert!(policy.blocked);
+    }
+
+    // ==================== build_request Method Tests ====================
+
+    #[test]
+    fn test_build_request_get() {
+        let client = rquest::Client::new();
+        let req = build_request(&client, "GET", "https://example.com", &HashMap::new(), &None);
+        let built = req.build().unwrap();
+        assert_eq!(built.method().as_str(), "GET");
+    }
+
+    #[test]
+    fn test_build_request_post() {
+        let client = rquest::Client::new();
+        let req = build_request(&client, "POST", "https://example.com", &HashMap::new(), &Some("body".to_string()));
+        let built = req.build().unwrap();
+        assert_eq!(built.method().as_str(), "POST");
+    }
+
+    #[test]
+    fn test_build_request_put() {
+        let client = rquest::Client::new();
+        let req = build_request(&client, "PUT", "https://example.com", &HashMap::new(), &None);
+        let built = req.build().unwrap();
+        assert_eq!(built.method().as_str(), "PUT");
+    }
+
+    #[test]
+    fn test_build_request_delete() {
+        let client = rquest::Client::new();
+        let req = build_request(&client, "DELETE", "https://example.com/resource", &HashMap::new(), &None);
+        let built = req.build().unwrap();
+        assert_eq!(built.method().as_str(), "DELETE");
+    }
+
+    #[test]
+    fn test_build_request_patch() {
+        let client = rquest::Client::new();
+        let req = build_request(&client, "PATCH", "https://example.com", &HashMap::new(), &None);
+        let built = req.build().unwrap();
+        assert_eq!(built.method().as_str(), "PATCH");
+    }
+
+    #[test]
+    fn test_build_request_head() {
+        let client = rquest::Client::new();
+        let req = build_request(&client, "HEAD", "https://example.com", &HashMap::new(), &None);
+        let built = req.build().unwrap();
+        assert_eq!(built.method().as_str(), "HEAD");
+    }
+
+    #[test]
+    fn test_build_request_unknown_defaults_to_get() {
+        let client = rquest::Client::new();
+        let req = build_request(&client, "OPTIONS", "https://example.com", &HashMap::new(), &None);
+        let built = req.build().unwrap();
+        assert_eq!(built.method().as_str(), "GET");
+    }
+
+    #[test]
+    fn test_build_request_with_headers() {
+        let client = rquest::Client::new();
+        let mut headers = HashMap::new();
+        headers.insert("accept".to_string(), "application/json".to_string());
+        headers.insert("x-custom".to_string(), "value".to_string());
+        let req = build_request(&client, "GET", "https://example.com", &headers, &None);
+        let built = req.build().unwrap();
+        assert_eq!(built.headers().get("accept").unwrap(), "application/json");
+        assert_eq!(built.headers().get("x-custom").unwrap(), "value");
+    }
+
+    // ==================== extract_response_headers Tests ====================
+
+    // Note: These would need a real HTTP response. Test the types instead.
+
+    #[test]
+    fn test_op_fetch_max_body_size() {
+        assert_eq!(OP_FETCH_MAX_BODY_SIZE, 1_048_576);
+    }
 }

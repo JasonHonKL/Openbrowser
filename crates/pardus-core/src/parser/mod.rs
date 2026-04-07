@@ -7,11 +7,13 @@ pub mod streaming;
 pub mod arena_dom;
 pub mod lazy;
 pub mod preload_scanner;
+pub mod streaming_semantic;
 
 pub use streaming::{StreamingParser, ParseOptions, ParseResult};
 pub use arena_dom::{ArenaDom, Node, NodeId, NodeType};
 pub use lazy::{LazyHtml, LazyParse, LazyDom};
 pub use preload_scanner::{PreloadScanner, ResourceHint, ResourceType, Priority};
+pub use streaming_semantic::{StreamingEventSink, StreamingParseStats};
 
 use bytes::Bytes;
 use std::sync::Arc;

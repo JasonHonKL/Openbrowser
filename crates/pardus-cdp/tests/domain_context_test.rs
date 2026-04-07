@@ -3,14 +3,14 @@
 //! Tests that DomainContext correctly creates Browser instances from App config
 //! and that navigation/reload operations work through the Browser API.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::{collections::HashMap, sync::Arc};
 
-use pardus_cdp::domain::{DomainContext, TargetEntry};
-use pardus_cdp::protocol::event_bus::EventBus;
-use pardus_cdp::protocol::node_map::NodeMap;
+use pardus_cdp::{
+    domain::{DomainContext, TargetEntry},
+    protocol::{event_bus::EventBus, node_map::NodeMap},
+};
 use pardus_core::{App, BrowserConfig};
+use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // DomainContext Creation Tests
@@ -18,7 +18,7 @@ use pardus_core::{App, BrowserConfig};
 
 #[test]
 fn test_domain_context_new() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::<String, TargetEntry>::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -40,7 +40,7 @@ fn test_domain_context_new() {
 #[test]
 fn test_domain_context_create_browser() {
     let config = BrowserConfig::default();
-    let app = Arc::new(App::new(config.clone()));
+    let app = Arc::new(App::new(config.clone()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::<String, TargetEntry>::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -74,6 +74,7 @@ fn test_target_entry_creation() {
         title: Some("Example".to_string()),
         js_enabled: true,
         frame_tree_json: None,
+        form_state: HashMap::new(),
     };
 
     assert_eq!(entry.url, "https://example.com");
@@ -90,6 +91,7 @@ fn test_target_entry_clone() {
         title: None,
         js_enabled: false,
         frame_tree_json: None,
+        form_state: HashMap::new(),
     };
 
     let cloned = entry.clone();
@@ -103,7 +105,7 @@ fn test_target_entry_clone() {
 
 #[tokio::test]
 async fn test_get_html() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -113,13 +115,17 @@ async fn test_get_html() {
     // Insert a test target
     {
         let mut targets_lock = targets.lock().await;
-        targets_lock.insert("target-1".to_string(), TargetEntry {
-            url: "https://example.com".to_string(),
-            html: Some("<html><body>Test</body></html>".to_string()),
-            title: Some("Test".to_string()),
-            js_enabled: false,
-            frame_tree_json: None,
-        });
+        targets_lock.insert(
+            "target-1".to_string(),
+            TargetEntry {
+                url: "https://example.com".to_string(),
+                html: Some("<html><body>Test</body></html>".to_string()),
+                title: Some("Test".to_string()),
+                js_enabled: false,
+                frame_tree_json: None,
+                form_state: HashMap::new(),
+            },
+        );
     }
 
     // Get HTML
@@ -133,7 +139,7 @@ async fn test_get_html() {
 
 #[tokio::test]
 async fn test_get_url() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -142,13 +148,17 @@ async fn test_get_url() {
 
     {
         let mut targets_lock = targets.lock().await;
-        targets_lock.insert("target-1".to_string(), TargetEntry {
-            url: "https://example.com/page".to_string(),
-            html: None,
-            title: None,
-            js_enabled: false,
-            frame_tree_json: None,
-        });
+        targets_lock.insert(
+            "target-1".to_string(),
+            TargetEntry {
+                url: "https://example.com/page".to_string(),
+                html: None,
+                title: None,
+                js_enabled: false,
+                frame_tree_json: None,
+                form_state: HashMap::new(),
+            },
+        );
     }
 
     let url = ctx.get_url("target-1").await;
@@ -160,7 +170,7 @@ async fn test_get_url() {
 
 #[tokio::test]
 async fn test_get_title() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -169,13 +179,17 @@ async fn test_get_title() {
 
     {
         let mut targets_lock = targets.lock().await;
-        targets_lock.insert("target-1".to_string(), TargetEntry {
-            url: "https://example.com".to_string(),
-            html: None,
-            title: Some("Page Title".to_string()),
-            js_enabled: false,
-            frame_tree_json: None,
-        });
+        targets_lock.insert(
+            "target-1".to_string(),
+            TargetEntry {
+                url: "https://example.com".to_string(),
+                html: None,
+                title: Some("Page Title".to_string()),
+                js_enabled: false,
+                frame_tree_json: None,
+                form_state: HashMap::new(),
+            },
+        );
     }
 
     let title = ctx.get_title("target-1").await;
@@ -187,7 +201,7 @@ async fn test_get_title() {
 
 #[tokio::test]
 async fn test_get_target_entry() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -200,6 +214,7 @@ async fn test_get_target_entry() {
         title: Some("Title".to_string()),
         js_enabled: true,
         frame_tree_json: None,
+        form_state: HashMap::new(),
     };
 
     {
@@ -242,7 +257,7 @@ async fn test_create_browser_has_correct_config() {
 
 #[tokio::test]
 async fn test_update_target_with_data() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -262,7 +277,10 @@ async fn test_update_target_with_data() {
     assert!(entry.is_some());
     let entry = entry.unwrap();
     assert_eq!(entry.url, "https://example.com");
-    assert_eq!(entry.html, Some("<html><body>Updated</body></html>".to_string()));
+    assert_eq!(
+        entry.html,
+        Some("<html><body>Updated</body></html>".to_string())
+    );
     assert_eq!(entry.title, Some("Updated Title".to_string()));
 }
 
@@ -272,7 +290,7 @@ async fn test_update_target_with_data() {
 
 #[tokio::test]
 async fn test_event_bus_in_domain_context() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -328,7 +346,7 @@ async fn test_browser_uses_app_config() {
 
 #[tokio::test]
 async fn test_concurrent_target_access() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -340,7 +358,7 @@ async fn test_concurrent_target_access() {
 
     for i in 0..10 {
         let ctx_clone = DomainContext::new(
-            Arc::new(App::new(BrowserConfig::default())),
+            Arc::new(App::new(BrowserConfig::default()).unwrap()),
             targets.clone(),
             Arc::new(EventBus::new(1024)),
             Arc::new(Mutex::new(NodeMap::new())),
@@ -379,7 +397,7 @@ async fn test_concurrent_target_access() {
 
 #[tokio::test]
 async fn test_navigate_invalid_url() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -393,7 +411,7 @@ async fn test_navigate_invalid_url() {
 
 #[tokio::test]
 async fn test_reload_nonexistent_target() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -411,7 +429,7 @@ async fn test_reload_nonexistent_target() {
 
 #[tokio::test]
 async fn test_multiple_browser_instances() {
-    let app = Arc::new(App::new(BrowserConfig::default()));
+    let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
     let targets = Arc::new(Mutex::new(HashMap::new()));
     let event_bus = Arc::new(EventBus::new(1024));
     let node_map = Arc::new(Mutex::new(NodeMap::new()));

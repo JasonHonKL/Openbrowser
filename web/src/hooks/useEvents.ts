@@ -10,6 +10,7 @@ export function useEvents(): UseEventsReturn {
   const [events, setEvents] = useState<ServerEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   const connect = useCallback(() => {
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -18,7 +19,7 @@ export function useEvents(): UseEventsReturn {
     ws.onopen = () => setConnected(true);
     ws.onclose = () => {
       setConnected(false);
-      setTimeout(connect, 3000);
+      reconnectTimerRef.current = setTimeout(connect, 3000);
     };
     ws.onmessage = (e) => {
       try {
@@ -34,7 +35,10 @@ export function useEvents(): UseEventsReturn {
 
   useEffect(() => {
     connect();
-    return () => wsRef.current?.close();
+    return () => {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      wsRef.current?.close();
+    };
   }, [connect]);
 
   return { events, connected };

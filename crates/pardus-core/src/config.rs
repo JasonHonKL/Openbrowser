@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 
-use crate::csp::CspPolicySet;
-use crate::sandbox::SandboxPolicy;
 #[cfg(feature = "tls-pinning")]
 use crate::tls::CertificatePinningConfig;
-use crate::url_policy::UrlPolicy;
+use crate::{csp::CspPolicySet, sandbox::SandboxPolicy, url_policy::UrlPolicy};
 
 /// Proxy configuration for HTTP/HTTPS/SOCKS5 traffic.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -21,9 +19,7 @@ pub struct ProxyConfig {
 
 impl ProxyConfig {
     /// Create a new empty proxy config
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
     /// Set HTTP proxy URL
     pub fn with_http_proxy(mut self, url: impl Into<String>) -> Self {
@@ -102,8 +98,6 @@ pub struct ConnectionPoolConfig {
     pub idle_timeout_secs: u64,
     /// TCP keepalive interval in seconds (default: 60)
     pub tcp_keepalive_secs: u64,
-    /// Enable HTTP/2 (default: true)
-    pub enable_http2: bool,
 }
 
 impl Default for ConnectionPoolConfig {
@@ -112,7 +106,6 @@ impl Default for ConnectionPoolConfig {
             max_idle_per_host: 32,
             idle_timeout_secs: 90,
             tcp_keepalive_secs: 60,
-            enable_http2: true,
         }
     }
 }
@@ -209,18 +202,10 @@ impl CspConfig {
         }
         if let Some(ref policy_str) = self.override_policy {
             let set = CspPolicySet::from_raw(policy_str);
-            if set.is_empty() {
-                None
-            } else {
-                Some(set)
-            }
+            if set.is_empty() { None } else { Some(set) }
         } else {
             let set = CspPolicySet::from_headers(headers);
-            if set.is_empty() {
-                None
-            } else {
-                Some(set)
-            }
+            if set.is_empty() { None } else { Some(set) }
         }
     }
 }
@@ -297,19 +282,23 @@ pub struct BrowserConfig {
     /// Maximum number of HTTP redirects to follow (default: 10).
     /// Set to 0 to disable automatic redirect following.
     pub max_redirects: usize,
+    /// Whether to verify TLS certificates (default: false).
+    /// Disabled by default because BoringSSL doesn't load system certs.
+    /// Set to true if you have configured custom CA certificates.
+    pub tls_verify_certificates: bool,
 }
 
 impl BrowserConfig {
-    pub fn effective_user_agent(&self) -> &str {
-        &self.user_agent
-    }
+    pub fn effective_user_agent(&self) -> &str { &self.user_agent }
 }
 
 impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
             cache_dir: default_cache_dir(),
-            user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string(),
+            user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                         (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                .to_string(),
             timeout_ms: 10_000,
             wait_ms: 3_000,
             screenshot_endpoint: None,
@@ -331,6 +320,7 @@ impl Default for BrowserConfig {
             retry: RetryConfig::default(),
             max_upload_size: 50 * 1024 * 1024,
             max_redirects: 10,
+            tls_verify_certificates: false,
         }
     }
 }

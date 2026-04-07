@@ -1,18 +1,21 @@
-use scraper::{Html, Selector, ElementRef};
+use std::{cell::OnceCell, sync::Arc, time::Instant};
+
+use pardus_debug::{Initiator, NetworkRecord, ResourceType};
+use scraper::{ElementRef, Html, Selector};
 use serde::Serialize;
-use std::sync::Arc;
-use std::time::Instant;
 use url::Url;
 
-use crate::app::App;
-use crate::frame::{FrameTree, FrameId};
-use crate::push::EarlyScanner;
-use crate::resource::ResourceFetcher;
-use crate::semantic::tree::{SemanticTree, SemanticRole, SemanticNode};
-use crate::navigation::graph::NavigationGraph;
-use crate::interact::element::{ElementHandle, element_to_handle};
-
-use pardus_debug::{NetworkRecord, ResourceType, Initiator};
+use crate::{
+    app::App,
+    frame::{FrameId, FrameTree},
+    interact::element::{ElementHandle, element_to_handle},
+    navigation::graph::NavigationGraph,
+    push::EarlyScanner,
+    resource::{
+        ResourceConfig, ResourceFetcher, ResourceKind, ResourceScheduler, scheduler::ResourceTask,
+    },
+    semantic::tree::{SemanticNode, SemanticRole, SemanticTree},
+};
 
 // ---------------------------------------------------------------------------
 // Redirect chain types
@@ -38,14 +41,10 @@ pub struct RedirectChain {
 }
 
 impl RedirectChain {
-    pub fn is_empty(&self) -> bool {
-        self.hops.is_empty()
-    }
+    pub fn is_empty(&self) -> bool { self.hops.is_empty() }
 
     /// The original URL before any redirects.
-    pub fn original_url(&self) -> Option<&str> {
-        self.hops.first().map(|h| h.from.as_str())
-    }
+    pub fn original_url(&self) -> Option<&str> { self.hops.first().map(|h| h.from.as_str()) }
 }
 
 /// Serializable snapshot of a page's state.
@@ -69,22 +68,67 @@ pub struct Page {
     pub content_type: Option<String>,
     pub html: Html,
     pub base_url: String,
-    /// CSP policy parsed from response headers (when CSP enforcement is enabled).
     pub csp: Option<crate::csp::CspPolicySet>,
-    /// Frame tree with recursively parsed iframe/frame content.
-    /// `None` if iframe parsing is disabled or not applicable.
     pub frame_tree: Option<FrameTree>,
-    /// Pre-built semantic tree for non-HTML content (e.g., PDFs).
-    /// When `Some`, `semantic_tree()` returns this instead of parsing HTML.
-    pub cached_tree: Option<SemanticTree>,
-    /// HTTP redirect chain (empty / None when no redirects occurred).
+    pub cached_tree: OnceCell<Arc<SemanticTree>>,
     pub redirect_chain: Option<RedirectChain>,
+}
+
+struct FetchedResponse {
+    final_url: String,
+    status: u16,
+    content_type: Option<String>,
+    resp_headers: Vec<(String, String)>,
+    http_version: String,
+    body_bytes: Vec<u8>,
+    redirect_hops: Vec<RedirectHop>,
+    started_at: String,
+    elapsed_ms: u128,
 }
 
 impl Page {
     #[must_use = "ignoring Result may silently swallow navigation errors"]
     pub async fn from_url(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
         Self::fetch_and_create(app, url, 0).await
+    }
+
+    /// Fetch a URL with streaming semantic parsing.
+    ///
+    /// Like `from_url()` but uses `StreamingHtmlParser` to discover elements
+    /// as HTTP chunks arrive. The optional `event_sink` receives nodes in
+    /// real-time. Returns `(Page, StreamingParseStats)`.
+    #[must_use = "ignoring Result may silently swallow navigation errors"]
+    pub async fn from_url_streaming(
+        app: &Arc<App>,
+        url: &str,
+        event_sink: Option<std::sync::Arc<dyn crate::parser::StreamingEventSink + Send + Sync>>,
+    ) -> anyhow::Result<(Self, crate::parser::StreamingParseStats)> {
+        let mut current_url = url.to_string();
+        let mut depth = 0;
+
+        loop {
+            if depth >= Self::MAX_REDIRECT_DEPTH {
+                anyhow::bail!(
+                    "Redirect depth exceeded ({} >= {}) for {}",
+                    depth,
+                    Self::MAX_REDIRECT_DEPTH,
+                    current_url
+                );
+            }
+
+            let (page, stats) =
+                Self::fetch_and_create_single_streaming(app, &current_url, event_sink.clone())
+                    .await?;
+
+            if let Some(refresh_url) = page.meta_refresh_url() {
+                tracing::debug!(target: "page", "meta refresh redirect: {} -> {}", current_url, refresh_url);
+                current_url = refresh_url;
+                depth += 1;
+                continue;
+            }
+
+            return Ok((page, stats));
+        }
     }
 
     /// Fetch a URL and create a Page, routing to PDF extraction when appropriate.
@@ -95,12 +139,21 @@ impl Page {
     /// 3. HTTP fetch with retry (exponential backoff for transient failures)
     /// 4. Response interception (after-response: modify / block)
     /// 5. Meta refresh redirect detection (up to MAX_REDIRECT_DEPTH)
-    pub(crate) async fn fetch_and_create(app: &Arc<App>, url: &str, mut depth: usize) -> anyhow::Result<Self> {
+    pub(crate) async fn fetch_and_create(
+        app: &Arc<App>,
+        url: &str,
+        mut depth: usize,
+    ) -> anyhow::Result<Self> {
         let mut current_url = url.to_string();
 
         loop {
             if depth >= Self::MAX_REDIRECT_DEPTH {
-                anyhow::bail!("Redirect depth exceeded ({} >= {}) for {}", depth, Self::MAX_REDIRECT_DEPTH, current_url);
+                anyhow::bail!(
+                    "Redirect depth exceeded ({} >= {}) for {}",
+                    depth,
+                    Self::MAX_REDIRECT_DEPTH,
+                    current_url
+                );
             }
 
             let page = Self::fetch_and_create_single(app, &current_url).await?;
@@ -116,27 +169,29 @@ impl Page {
         }
     }
 
-    async fn fetch_and_create_single(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
-
-        // --- Phase 1: Request deduplication ---
+    async fn run_fetch_pipeline(
+        app: &Arc<App>,
+        url: &str,
+    ) -> anyhow::Result<(FetchedResponse, String)> {
         let url_key = crate::dedup::dedup_key(url);
+
         if app.dedup.is_enabled() {
             match app.dedup.enter(&url_key).await {
                 crate::dedup::DedupEntry::Cached(result) => {
-                    return Self::from_dedup_result(&result);
+                    let resp = FetchedResponse::from_dedup_result(result);
+                    return Ok((resp, url_key));
                 }
                 crate::dedup::DedupEntry::Wait(notify) => {
                     notify.notified().await;
                     if let Some(result) = app.dedup.get_completed(&url_key) {
-                        return Self::from_dedup_result(&result);
+                        let resp = FetchedResponse::from_dedup_result(result);
+                        return Ok((resp, url_key));
                     }
-                    // Result was removed (error path) — fall through to own fetch.
                 }
                 crate::dedup::DedupEntry::Proceed => {}
             }
         }
 
-        // --- Phase 2: Request interception ---
         let mut req_ctx = crate::intercept::RequestContext {
             url: url.to_string(),
             method: "GET".to_string(),
@@ -159,24 +214,23 @@ impl Page {
             }
             crate::intercept::InterceptAction::Mock(mock) => {
                 tracing::debug!("interceptor mocked response for {}", url);
-                return Ok(Self::from_mock_response(&req_ctx.url, &mock));
+                let resp = FetchedResponse::from_mock(&req_ctx.url, &mock);
+                return Ok((resp, url_key));
             }
-            crate::intercept::InterceptAction::Modify(_) | crate::intercept::InterceptAction::Continue => {
-                req_ctx.url.clone()
-            }
+            crate::intercept::InterceptAction::Modify(_)
+            | crate::intercept::InterceptAction::Continue => req_ctx.url.clone(),
         };
 
-        // Re-validate if the URL was changed.
         if effective_url != url {
             app.validate_url(&effective_url)?;
         }
 
-        // --- Phase 3: HTTP fetch with retry ---
         let started_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let start = Instant::now();
 
         let retry_config = app.config.read().retry.clone();
-        let (response, redirect_hops) = Self::fetch_with_retry(app, &effective_url, &req_ctx.headers, &retry_config).await?;
+        let (response, redirect_hops) =
+            Self::fetch_with_retry(app, &effective_url, &req_ctx.headers, &retry_config).await?;
 
         let http_version = format_http_version(response.version());
         let status = response.status().as_u16();
@@ -193,7 +247,6 @@ impl Page {
             .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
             .collect();
 
-        // --- Phase 4: Response interception ---
         let resp_ctx = crate::intercept::ResponseContext {
             url: final_url.clone(),
             status,
@@ -201,149 +254,82 @@ impl Page {
             body: None,
             resource_type: ResourceType::Document,
         };
-        let post_action = app.interceptors.run_after_response(&mut {
-            let mut ctx = resp_ctx;
-            // Response interception only runs if interceptors exist
-            ctx
-        }).await;
+        let post_action = app
+            .interceptors
+            .run_after_response(&mut {
+                let mut ctx = resp_ctx;
+                ctx
+            })
+            .await;
 
-        // For after-response, we only block or continue (modify on response is rare)
         if let crate::intercept::InterceptAction::Block = post_action {
             app.dedup.remove(&url_key);
             anyhow::bail!("Response from '{}' blocked by interceptor", final_url);
         }
 
-        // --- Process response body ---
-        let is_pdf = content_type.as_ref().map_or(false, |ct| {
-            ct.split(';').next().unwrap_or(ct).trim().to_lowercase() == "application/pdf"
-        });
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read response body: {}", e))?;
 
-        if is_pdf {
-            let bytes = response
-                .bytes()
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to download PDF: {}", e))?;
-            let body_size = bytes.len();
+        let elapsed_ms = start.elapsed().as_millis();
+        let body_size = body_bytes.len();
 
-            let config = app.config.read();
-            if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
-                app.dedup.remove(&url_key);
-                anyhow::bail!(
-                    "PDF size ({} bytes) exceeds sandbox limit ({} bytes)",
-                    body_size,
-                    config.sandbox.max_page_size
-                );
-            }
-            drop(config);
-
-            let timing_ms = start.elapsed().as_millis();
-            record_main_request(
-                app, &effective_url, &final_url, status, &content_type,
-                body_size, timing_ms, &resp_headers, started_at, &http_version,
-            );
-
-            let result = crate::dedup::DedupResult {
-                url: final_url.clone(),
-                status,
-                body: bytes.to_vec(),
-                content_type: content_type.clone(),
-                headers: resp_headers.clone(),
-                http_version: http_version.clone(),
-            };
-            app.dedup.complete(&url_key, result);
-
-            return Self::from_pdf_bytes(&bytes, &final_url, status, content_type);
-        }
-
-        let body = response.text().await?;
-        let body_size = body.len();
-
-        // Check for RSS/Atom feed content
-        if crate::feed::is_feed_content(body.as_bytes(), content_type.as_deref()) {
-            let timing_ms = start.elapsed().as_millis();
-            record_main_request(
-                app, &effective_url, &final_url, status, &content_type,
-                body_size, timing_ms, &resp_headers, started_at, &http_version,
-            );
-
-            let result = crate::dedup::DedupResult {
-                url: final_url.clone(),
-                status,
-                body: body.as_bytes().to_vec(),
-                content_type: content_type.clone(),
-                headers: resp_headers.clone(),
-                http_version: http_version.clone(),
-            };
-            app.dedup.complete(&url_key, result);
-
-            return Self::from_feed_bytes(body.as_bytes(), &final_url, status, content_type);
-        }
-
-        let config = app.config.read();
-        if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
-            app.dedup.remove(&url_key);
-            anyhow::bail!(
-                "Page size ({} bytes) exceeds sandbox limit ({} bytes)",
-                body_size,
-                config.sandbox.max_page_size
-            );
-        }
-
-        let timing_ms = start.elapsed().as_millis();
         record_main_request(
-            app, &effective_url, &final_url, status, &content_type,
-            body_size, timing_ms, &resp_headers, started_at, &http_version,
+            app,
+            &effective_url,
+            &final_url,
+            status,
+            &content_type,
+            body_size,
+            elapsed_ms,
+            &resp_headers,
+            started_at.clone(),
+            &http_version,
         );
 
-        let result = crate::dedup::DedupResult {
+        let body_bytes_vec = body_bytes.to_vec();
+
+        let dedup_result = crate::dedup::DedupResult {
             url: final_url.clone(),
             status,
-            body: body.as_bytes().to_vec(),
+            body: body_bytes_vec.clone(),
             content_type: content_type.clone(),
             headers: resp_headers.clone(),
             http_version: http_version.clone(),
         };
-        app.dedup.complete(&url_key, result);
+        app.dedup.complete(&url_key, dedup_result);
 
-        validate_content_type_pub(content_type.as_deref(), &final_url)?;
-
-        let push_enabled = config.push.enable_push && !config.sandbox.disable_push;
-        let csp_policy = config.csp.parse_policy(&resp_headers);
-        drop(config);
-
-        spawn_push_fetches(&app.http_client, &body, &final_url, push_enabled);
-
-        let html = Html::parse_document(&body);
-        let base_url = Self::extract_base_url(&html, &final_url, csp_policy.as_ref());
-
-        let config = app.config.read();
-        let frame_tree = if config.parse_iframes {
-            let max_depth = config.max_iframe_depth;
-            drop(config);
-            Some(
-                FrameTree::build(html.clone(), &final_url, &base_url, &app.http_client, max_depth)
-                    .await,
-            )
-        } else {
-            drop(config);
-            None
-        };
-
-        Ok(Self {
-            url: final_url,
-            status,
-            content_type,
-            html,
-            base_url,
-            csp: csp_policy,
-            frame_tree,
-            cached_tree: None,
-            redirect_chain: if redirect_hops.is_empty() {
-                None
-            } else {
-                Some(RedirectChain { hops: redirect_hops })
+        Ok((
+            FetchedResponse {
+                final_url,
+                status,
+                content_type,
+                resp_headers,
+                http_version,
+                body_bytes: body_bytes_vec,
+                redirect_hops,
+                started_at,
+                elapsed_ms,
             },
-        })
+            url_key,
+        ))
+    }
+
+    async fn fetch_and_create_single(app: &Arc<App>, url: &str) -> anyhow::Result<Self> {
+        let (fetched, url_key) = Self::run_fetch_pipeline(app, url).await?;
+        fetched.into_page(app, &url_key, None).await
+    }
+
+    async fn fetch_and_create_single_streaming(
+        app: &Arc<App>,
+        url: &str,
+        event_sink: Option<std::sync::Arc<dyn crate::parser::StreamingEventSink + Send + Sync>>,
+    ) -> anyhow::Result<(Self, crate::parser::StreamingParseStats)> {
+        let (fetched, url_key) = Self::run_fetch_pipeline(app, url).await?;
+        let page = fetched.into_page(app, &url_key, event_sink).await?;
+        let stats = crate::parser::StreamingParseStats::default();
+        Ok((page, stats))
     }
 
     fn meta_refresh_url(&self) -> Option<String> {
@@ -367,7 +353,7 @@ impl Page {
             base_url: url.to_string(),
             csp: None,
             frame_tree: None,
-            cached_tree: None,
+            cached_tree: OnceCell::new(),
             redirect_chain: None,
         }
     }
@@ -387,7 +373,7 @@ impl Page {
             base_url: result.url.clone(),
             csp: None,
             frame_tree: None,
-            cached_tree: None,
+            cached_tree: OnceCell::new(),
             redirect_chain: None,
         })
     }
@@ -421,12 +407,14 @@ impl Page {
             }
 
             // Set custom redirect policy to capture each hop
-            request_builder = request_builder.redirect(
-                rquest::redirect::Policy::custom(move |attempt| {
+            request_builder =
+                request_builder.redirect(rquest::redirect::Policy::custom(move |attempt| {
                     if attempt.previous().len() >= max {
                         return attempt.error("too many redirects");
                     }
-                    let from = attempt.previous().last()
+                    let from = attempt
+                        .previous()
+                        .last()
                         .map(|u| u.to_string())
                         .unwrap_or_default();
                     let to = attempt.url().to_string();
@@ -435,8 +423,7 @@ impl Page {
                         hops.push(RedirectHop { from, to, status });
                     }
                     attempt.follow()
-                })
-            );
+                }));
 
             // Build the request so we can retry it
             let request = request_builder
@@ -453,7 +440,11 @@ impl Page {
                         let delay = compute_backoff(attempt, retry_config);
                         tracing::debug!(
                             "retry {}/{} for {} (status {}), waiting {}ms",
-                            attempt, retry_config.max_retries, url, status, delay,
+                            attempt,
+                            retry_config.max_retries,
+                            url,
+                            status,
+                            delay,
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                         continue;
@@ -464,12 +455,18 @@ impl Page {
                         .unwrap_or_default();
                     return Ok((response, hops));
                 }
-                Err(e) if (e.is_timeout() || e.is_connect()) && attempt < retry_config.max_retries => {
+                Err(e)
+                    if (e.is_timeout() || e.is_connect()) && attempt < retry_config.max_retries =>
+                {
                     attempt += 1;
                     let delay = compute_backoff(attempt, retry_config);
                     tracing::debug!(
                         "retry {}/{} for {} ({}), waiting {}ms",
-                        attempt, retry_config.max_retries, url, e, delay,
+                        attempt,
+                        retry_config.max_retries,
+                        url,
+                        e,
+                        delay,
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                     continue;
@@ -497,7 +494,7 @@ impl Page {
             base_url: url.to_string(),
             csp: None,
             frame_tree: None,
-            cached_tree: Some(tree),
+            cached_tree: OnceCell::from(Arc::new(tree)),
             redirect_chain: None,
         })
     }
@@ -520,7 +517,7 @@ impl Page {
             base_url: url.to_string(),
             csp: None,
             frame_tree: None,
-            cached_tree: Some(tree),
+            cached_tree: OnceCell::from(Arc::new(tree)),
             redirect_chain: None,
         })
     }
@@ -533,12 +530,17 @@ impl Page {
 
         loop {
             if depth >= Self::MAX_REDIRECT_DEPTH {
-                anyhow::bail!("Redirect depth exceeded ({} >= {}) for {}", depth, Self::MAX_REDIRECT_DEPTH, current_url);
+                anyhow::bail!(
+                    "Redirect depth exceeded ({} >= {}) for {}",
+                    depth,
+                    Self::MAX_REDIRECT_DEPTH,
+                    current_url
+                );
             }
 
             let mut page = Self::fetch_and_create(app, &current_url, depth).await?;
 
-            if page.cached_tree.is_some() {
+            if page.cached_tree.get().is_some() {
                 return Ok(page);
             }
 
@@ -546,8 +548,15 @@ impl Page {
             let base_url = page.base_url.clone();
             let sandbox = &app.config.read().sandbox;
             let user_agent = app.config.read().user_agent.clone();
-            let final_body =
-                crate::js::execute_js(&html_str, &base_url, wait_ms, Some(sandbox), &user_agent, Some(app.cookie_jar.clone())).await?;
+            let (final_body, _mutations) = crate::js::execute_js(
+                &html_str,
+                &base_url,
+                wait_ms,
+                Some(sandbox),
+                &user_agent,
+                Some(app.cookie_jar.clone()),
+            )
+            .await?;
 
             if let Some(nav_href) = Self::parse_js_navigation_href(&final_body) {
                 let resolved = Url::parse(&page.url)
@@ -568,8 +577,14 @@ impl Page {
                 let max_depth = config.max_iframe_depth;
                 drop(config);
                 Some(
-                    FrameTree::build(html.clone(), &page.url, &base_url, &app.http_client, max_depth)
-                        .await,
+                    FrameTree::build(
+                        html.clone(),
+                        &page.url,
+                        &base_url,
+                        &app.http_client,
+                        max_depth,
+                    )
+                    .await,
                 )
             } else {
                 drop(config);
@@ -586,7 +601,11 @@ impl Page {
 
     /// Returns an error indicating JS support is not compiled in.
     #[cfg(not(feature = "js"))]
-    pub async fn from_url_with_js(_app: &Arc<App>, _url: &str, _wait_ms: u32) -> anyhow::Result<Self> {
+    pub async fn from_url_with_js(
+        _app: &Arc<App>,
+        _url: &str,
+        _wait_ms: u32,
+    ) -> anyhow::Result<Self> {
         anyhow::bail!("JavaScript execution is not available — rebuild with --features js");
     }
 
@@ -601,7 +620,7 @@ impl Page {
             base_url,
             csp: None,
             frame_tree: None,
-            cached_tree: None,
+            cached_tree: OnceCell::new(),
             redirect_chain: None,
         }
     }
@@ -618,7 +637,7 @@ impl Page {
             base_url,
             csp: None,
             frame_tree: Some(frame_tree),
-            cached_tree: None,
+            cached_tree: OnceCell::new(),
             redirect_chain: None,
         }
     }
@@ -632,7 +651,8 @@ impl Page {
     ) -> Self {
         let html = Html::parse_document(html_str);
         let base_url = Self::extract_base_url(&html, url, None);
-        let frame_tree = FrameTree::build(html.clone(), url, &base_url, http_client, max_depth).await;
+        let frame_tree =
+            FrameTree::build(html.clone(), url, &base_url, http_client, max_depth).await;
         Self {
             url: url.to_string(),
             status: 200,
@@ -641,13 +661,13 @@ impl Page {
             base_url,
             csp: None,
             frame_tree: Some(frame_tree),
-            cached_tree: None,
+            cached_tree: OnceCell::new(),
             redirect_chain: None,
         }
     }
 
     pub fn title(&self) -> Option<String> {
-        if let Some(ref tree) = self.cached_tree {
+        if let Some(tree) = self.cached_tree.get() {
             return tree.root.name.clone();
         }
 
@@ -679,14 +699,14 @@ impl Page {
 
     /// Find an element by its semantic role and optional name.
     pub fn find_by_role(&self, role: SemanticRole, name: Option<&str>) -> Option<ElementHandle> {
-        let tree = self.semantic_tree();
+        let tree = self.semantic_tree_ref()?;
         let node = find_node_by_role(&tree.root, &role, name)?;
         node_to_handle(&node, &self.html)
     }
 
     /// Find an element by its semantic action string and optional name.
     pub fn find_by_action(&self, action: &str, name: Option<&str>) -> Option<ElementHandle> {
-        let tree = self.semantic_tree();
+        let tree = self.semantic_tree_ref()?;
         let node = find_node_by_action(&tree.root, action, name)?;
         node_to_handle(&node, &self.html)
     }
@@ -694,14 +714,16 @@ impl Page {
     /// Find an interactive element by its element ID (e.g., 1, 2, 3).
     /// This is the preferred way for AI agents to reference elements.
     pub fn find_by_element_id(&self, id: usize) -> Option<ElementHandle> {
-        let tree = self.semantic_tree();
+        let tree = self.semantic_tree_ref()?;
         let node = find_node_by_element_id(&tree.root, id)?;
         node_to_handle(&node, &self.html)
     }
 
     /// Get all interactive elements from the semantic tree.
     pub fn interactive_elements(&self) -> Vec<ElementHandle> {
-        let tree = self.semantic_tree();
+        let Some(tree) = self.semantic_tree_ref() else {
+            return Vec::new();
+        };
         let nodes = collect_interactive(&tree.root);
         nodes
             .into_iter()
@@ -722,21 +744,24 @@ impl Page {
         Self::extract_base_url(html, fallback, None)
     }
 
-    pub fn semantic_tree(&self) -> SemanticTree {
-        if let Some(ref tree) = self.cached_tree {
-            return tree.clone();
-        }
-        if let Some(ref frame_tree) = self.frame_tree {
-            SemanticTree::build_with_frames(&self.html, &self.base_url, frame_tree)
-        } else {
-            SemanticTree::build(&self.html, &self.base_url)
-        }
+    pub fn semantic_tree(&self) -> Arc<SemanticTree> {
+        self.cached_tree
+            .get_or_init(|| {
+                if let Some(ref frame_tree) = self.frame_tree {
+                    Arc::new(SemanticTree::build_with_frames(&self.html, &self.base_url, frame_tree))
+                } else {
+                    Arc::new(SemanticTree::build(&self.html, &self.base_url))
+                }
+            })
+            .clone()
+    }
+
+    pub fn semantic_tree_ref(&self) -> Option<&SemanticTree> {
+        self.cached_tree.get().map(|arc| arc.as_ref())
     }
 
     /// Get the frame tree for this page (if iframe parsing was enabled).
-    pub fn frame_tree(&self) -> Option<&FrameTree> {
-        self.frame_tree.as_ref()
-    }
+    pub fn frame_tree(&self) -> Option<&FrameTree> { self.frame_tree.as_ref() }
 
     /// Find an element in a specific frame by CSS selector.
     pub fn query_in_frame(&self, frame_id: &FrameId, selector: &str) -> Option<ElementHandle> {
@@ -766,7 +791,8 @@ impl Page {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        let results: Vec<ElementHandle> = html.select(&sel)
+        let results: Vec<ElementHandle> = html
+            .select(&sel)
             .map(|el| element_to_handle(&el, &html))
             .collect();
         results
@@ -804,11 +830,16 @@ impl Page {
             base_url: self.base_url.clone(),
             csp: self.csp.clone(),
             frame_tree: None,
-            cached_tree: self.cached_tree.clone(),
+            cached_tree: {
+                let cell = OnceCell::new();
+                if let Some(tree) = self.cached_tree.get() {
+                    let _ = cell.set(tree.clone());
+                }
+                cell
+            },
             redirect_chain: self.redirect_chain.clone(),
         }
     }
-
 
     pub fn navigation_graph(&self) -> NavigationGraph {
         NavigationGraph::build(&self.html, &self.url)
@@ -820,11 +851,8 @@ impl Page {
             log.next_id()
         };
 
-        let subresources = pardus_debug::discover::discover_subresources(
-            &self.html,
-            &self.base_url,
-            start_id,
-        );
+        let subresources =
+            pardus_debug::discover::discover_subresources(&self.html, &self.base_url, start_id);
 
         let mut log = log.lock().unwrap();
         for record in subresources {
@@ -836,7 +864,56 @@ impl Page {
         client: &rquest::Client,
         log: &Arc<std::sync::Mutex<pardus_debug::NetworkLog>>,
     ) {
-        pardus_debug::fetch::fetch_subresources(client, log, 6).await;
+        // 1. Extract unfetched records with their types and IDs
+        let entries: Vec<(usize, String, ResourceType)> = {
+            let guard = log.lock().unwrap();
+            guard
+                .records
+                .iter()
+                .filter(|r| r.status.is_none() && r.error.is_none())
+                .map(|r| (r.id, r.url.clone(), r.resource_type.clone()))
+                .collect()
+        };
+
+        if entries.is_empty() {
+            return;
+        }
+
+        // 2. Map to ResourceTask with priority based on resource type
+        let tasks: Vec<ResourceTask> = entries
+            .iter()
+            .map(|(_, url, rt)| {
+                let kind = resource_kind(rt);
+                let priority = resource_type_priority(rt);
+                ResourceTask::new(url.clone(), kind, priority)
+            })
+            .collect();
+
+        // 3. Build scheduler with default config
+        let cache = Arc::new(crate::cache::ResourceCache::new(10 * 1024 * 1024));
+        let config = ResourceConfig::default();
+        let scheduler = Arc::new(ResourceScheduler::new(client.clone(), config, cache));
+
+        // 4. Fetch with priority ordering
+        let results = scheduler.schedule_batch(tasks).await;
+
+        // 5. Write results back into NetworkLog
+        let mut guard = log.lock().unwrap();
+        for result in &results {
+            if let Some(record) = guard.records.iter_mut().find(|r| r.url == result.url) {
+                if result.error.is_none() {
+                    record.status = Some(result.status);
+                    record.status_text =
+                        Some(if result.status < 400 { "OK" } else { "Error" }.to_string());
+                } else {
+                    record.error = result.error.clone();
+                }
+                record.body_size = Some(result.size);
+                record.content_type = result.content_type.clone();
+                record.timing_ms = Some(result.duration_ms as u128);
+                record.response_headers = result.response_headers_vec();
+            }
+        }
     }
 
     /// Resolve a URL relative to this page's base URL, preserving
@@ -856,9 +933,12 @@ impl Page {
             let mut merged = base.clone();
             let relative = match Url::parse(&format!("https://dummy.com{}", href)) {
                 Ok(u) => u,
-                Err(_) => return base.join(href)
-                    .map(|u| u.to_string())
-                    .unwrap_or_else(|_| href.to_string()),
+                Err(_) => {
+                    return base
+                        .join(href)
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|_| href.to_string());
+                }
             };
 
             let mut pairs: Vec<(String, String)> = base
@@ -890,13 +970,15 @@ impl Page {
             .unwrap_or_else(|_| href.to_string())
     }
 
-    fn extract_base_url(html: &Html, fallback: &str, csp: Option<&crate::csp::CspPolicySet>) -> String {
+    fn extract_base_url(
+        html: &Html,
+        fallback: &str,
+        csp: Option<&crate::csp::CspPolicySet>,
+    ) -> String {
         if let Ok(selector) = Selector::parse("base[href]") {
             if let Some(base_el) = html.select(&selector).next() {
                 if let Some(href) = base_el.value().attr("href") {
-                    if let Ok(resolved) = Url::parse(fallback)
-                        .and_then(|base| base.join(href))
-                    {
+                    if let Ok(resolved) = Url::parse(fallback).and_then(|base| base.join(href)) {
                         // CSP: check base-uri directive
                         if let Some(csp_policy) = csp {
                             if let Ok(fallback_url) = Url::parse(fallback) {
@@ -905,14 +987,16 @@ impl Page {
                                     let check = csp_policy.check_base_uri(&origin, &resolved_url);
                                     if !check.allowed {
                                         if let Some(ref directive) = check.violated_directive {
-                                            crate::csp::report_violation(&crate::csp::CspViolation {
-                                                document_uri: fallback.to_string(),
-                                                blocked_uri: resolved.to_string(),
-                                                effective_directive: directive.clone(),
-                                                original_policy: String::new(),
-                                                disposition: crate::csp::Disposition::Enforce,
-                                                status_code: 0,
-                                            });
+                                            crate::csp::report_violation(
+                                                &crate::csp::CspViolation {
+                                                    document_uri: fallback.to_string(),
+                                                    blocked_uri: resolved.to_string(),
+                                                    effective_directive: directive.clone(),
+                                                    original_policy: String::new(),
+                                                    disposition: crate::csp::Disposition::Enforce,
+                                                    status_code: 0,
+                                                },
+                                            );
                                         }
                                         return fallback.to_string();
                                     }
@@ -966,7 +1050,11 @@ impl Page {
                 let lower = url_part.to_lowercase();
                 if lower.starts_with("url ") {
                     let rest = url_part[4..].trim_start();
-                    Some(rest.strip_prefix("=").map(|u| u.trim_start()).unwrap_or(rest))
+                    Some(
+                        rest.strip_prefix("=")
+                            .map(|u| u.trim_start())
+                            .unwrap_or(rest),
+                    )
                 } else {
                     None
                 }
@@ -998,9 +1086,7 @@ impl Page {
         doc.select(&selector).next().and_then(|el| {
             let href = el.value().attr("data-pardus-navigation-href")?;
             let trimmed = href.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with('#')
-                || trimmed.starts_with("javascript:")
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("javascript:")
             {
                 None
             } else {
@@ -1064,7 +1150,8 @@ fn http_status_text(status: u16) -> String {
         502 => "Bad Gateway",
         503 => "Service Unavailable",
         _ => "",
-    }.to_string()
+    }
+    .to_string()
 }
 
 fn format_http_version(version: http::Version) -> String {
@@ -1075,12 +1162,16 @@ fn format_http_version(version: http::Version) -> String {
         http::Version::HTTP_2 => "HTTP/2",
         http::Version::HTTP_3 => "HTTP/3",
         _ => "unknown",
-    }.to_string()
+    }
+    .to_string()
 }
 
 /// Validate that the response content type is HTML-compatible.
 /// Returns an error for binary or non-text responses (e.g. audio, images).
-pub(crate) fn validate_content_type_pub(content_type: Option<&str>, url: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_content_type_pub(
+    content_type: Option<&str>,
+    url: &str,
+) -> anyhow::Result<()> {
     if let Some(ct) = content_type {
         let ct_lower = ct.to_lowercase();
         let is_html = ct_lower.contains("text/html")
@@ -1106,12 +1197,7 @@ pub(crate) fn validate_content_type_pub(content_type: Option<&str>, url: &str) -
 // HTTP/2 push simulation: speculative early resource fetching
 // ---------------------------------------------------------------------------
 
-fn spawn_push_fetches(
-    client: &rquest::Client,
-    html_body: &str,
-    base_url: &str,
-    enabled: bool,
-) {
+fn spawn_push_fetches(client: &rquest::Client, html_body: &str, base_url: &str, enabled: bool) {
     if !enabled {
         return;
     }
@@ -1193,7 +1279,10 @@ fn find_node_by_action<'a>(
     None
 }
 
-fn find_node_by_element_id<'a>(node: &'a SemanticNode, target_id: usize) -> Option<&'a SemanticNode> {
+fn find_node_by_element_id<'a>(
+    node: &'a SemanticNode,
+    target_id: usize,
+) -> Option<&'a SemanticNode> {
     if node.element_id == Some(target_id) {
         return Some(node);
     }
@@ -1333,8 +1422,7 @@ fn element_matches_node(el: &ElementRef, node: &SemanticNode) -> bool {
 
 /// Compute exponential backoff delay with jitter.
 fn compute_backoff(attempt: u32, config: &crate::config::RetryConfig) -> u64 {
-    let base = config.initial_backoff_ms as f64
-        * config.backoff_factor.powi((attempt as i32) - 1);
+    let base = config.initial_backoff_ms as f64 * config.backoff_factor.powi((attempt as i32) - 1);
     // Add up to 30% jitter to spread retries
     let jitter = fastrand::f64() * 0.3 * base;
     let delay = (base + jitter) as u64;
@@ -1343,16 +1431,13 @@ fn compute_backoff(attempt: u32, config: &crate::config::RetryConfig) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use url::Url;
 
-    fn parse(html: &str) -> Html {
-        Html::parse_document(html)
-    }
+    use super::*;
 
-    fn base() -> Url {
-        Url::parse("https://example.com/page").unwrap()
-    }
+    fn parse(html: &str) -> Html { Html::parse_document(html) }
+
+    fn base() -> Url { Url::parse("https://example.com/page").unwrap() }
 
     // ==================== parse_meta_refresh tests ====================
 
@@ -1393,7 +1478,8 @@ mod tests {
 
     #[test]
     fn test_meta_refresh_reload_only() {
-        let html = r#"<html><head><meta http-equiv="refresh" content="30"></head><body></body></html>"#;
+        let html =
+            r#"<html><head><meta http-equiv="refresh" content="30"></head><body></body></html>"#;
         let result = Page::parse_meta_refresh(&parse(html), &base());
         assert_eq!(result, None);
     }
@@ -1457,7 +1543,8 @@ mod tests {
     #[cfg(feature = "js")]
     #[test]
     fn test_parse_js_nav_href_hash() {
-        let html = r##"<html data-pardus-navigation-href="#section"><head></head><body></body></html>"##;
+        let html =
+            r##"<html data-pardus-navigation-href="#section"><head></head><body></body></html>"##;
         let result = Page::parse_js_navigation_href(html);
         assert_eq!(result, None);
     }
@@ -1481,7 +1568,8 @@ mod tests {
     #[cfg(feature = "js")]
     #[test]
     fn test_parse_js_nav_href_relative() {
-        let html = r#"<html data-pardus-navigation-href="/new-page"><head></head><body></body></html>"#;
+        let html =
+            r#"<html data-pardus-navigation-href="/new-page"><head></head><body></body></html>"#;
         let result = Page::parse_js_navigation_href(html);
         assert_eq!(result, Some("/new-page".to_string()));
     }
@@ -1489,7 +1577,8 @@ mod tests {
     #[cfg(feature = "js")]
     #[test]
     fn test_parse_js_nav_href_whitespace_trimmed() {
-        let html = r#"<html data-pardus-navigation-href="  /trimmed  "><head></head><body></body></html>"#;
+        let html =
+            r#"<html data-pardus-navigation-href="  /trimmed  "><head></head><body></body></html>"#;
         let result = Page::parse_js_navigation_href(html);
         assert_eq!(result, Some("/trimmed".to_string()));
     }
@@ -1516,7 +1605,10 @@ mod tests {
     fn test_refresh_content_with_query_params() {
         let html = r#"<html><head><meta http-equiv="refresh" content="0;url=https://example.com/redirect?foo=bar&baz=1"></head><body></body></html>"#;
         let result = Page::parse_meta_refresh(&parse(html), &base());
-        assert_eq!(result, Some("https://example.com/redirect?foo=bar&baz=1".to_string()));
+        assert_eq!(
+            result,
+            Some("https://example.com/redirect?foo=bar&baz=1".to_string())
+        );
     }
 
     #[test]
@@ -1574,7 +1666,10 @@ mod tests {
     fn test_page_meta_refresh_url_with_refresh() {
         let html = r#"<html><head><meta http-equiv="refresh" content="0;url=https://other.com"></head><body></body></html>"#;
         let page = Page::from_html(html, "https://example.com");
-        assert_eq!(page.meta_refresh_url(), Some("https://other.com/".to_string()));
+        assert_eq!(
+            page.meta_refresh_url(),
+            Some("https://other.com/".to_string())
+        );
     }
 
     #[test]
@@ -1588,14 +1683,20 @@ mod tests {
     fn test_page_meta_refresh_url_relative() {
         let html = r#"<html><head><meta http-equiv="refresh" content="0;url=/new-path"></head><body></body></html>"#;
         let page = Page::from_html(html, "https://example.com/page");
-        assert_eq!(page.meta_refresh_url(), Some("https://example.com/new-path".to_string()));
+        assert_eq!(
+            page.meta_refresh_url(),
+            Some("https://example.com/new-path".to_string())
+        );
     }
 
     #[test]
     fn test_page_meta_refresh_url_with_base_tag() {
         let html = r#"<html><head><base href="https://cdn.example.com/"><meta http-equiv="refresh" content="0;url=/assets/page"></head><body></body></html>"#;
         let page = Page::from_html(html, "https://example.com");
-        assert_eq!(page.meta_refresh_url(), Some("https://cdn.example.com/assets/page".to_string()));
+        assert_eq!(
+            page.meta_refresh_url(),
+            Some("https://cdn.example.com/assets/page".to_string())
+        );
     }
 
     // ==================== MAX_REDIRECT_DEPTH tests ====================
@@ -1603,5 +1704,352 @@ mod tests {
     #[test]
     fn test_max_redirect_depth_value() {
         assert_eq!(Page::MAX_REDIRECT_DEPTH, 5);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OAuth redirect capture
+// ---------------------------------------------------------------------------
+
+/// Result of an OAuth-aware navigation that captures redirect callbacks.
+pub enum OAuthNavigateResult {
+    /// Landed on an intermediate page (e.g., login form, consent screen).
+    Page(Page),
+    /// Captured a redirect to the callback URL with the authorization code.
+    Callback {
+        /// The full callback URL.
+        url: String,
+        /// The authorization code extracted from the query string.
+        code: String,
+        /// The state parameter from the callback (for CSRF validation).
+        state: String,
+    },
+}
+
+impl Page {
+    /// Navigate to a URL with redirect interception for OAuth callback capture.
+    ///
+    /// Behaves like `from_url` but stops following redirects when the target
+    /// URL matches the given `callback_url` prefix. This allows extracting the
+    /// `code` and `state` parameters from OAuth/OIDC callbacks.
+    ///
+    /// If no redirect to the callback URL is encountered, returns the final
+    /// page as `OAuthNavigateResult::Page` (e.g., a login form).
+    pub async fn navigate_with_redirect_capture(
+        app: &Arc<App>,
+        url: &str,
+        callback_url: &str,
+    ) -> anyhow::Result<OAuthNavigateResult> {
+        let callback_prefix = callback_url.to_string();
+        let captured_redirect: Arc<std::sync::Mutex<Option<String>>> =
+            Arc::new(std::sync::Mutex::new(None));
+
+        let max_redirects = app.config.read().max_redirects;
+        let redirect_hops: Arc<std::sync::Mutex<Vec<RedirectHop>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let hops_clone = redirect_hops.clone();
+        let captured_clone = captured_redirect.clone();
+        let max = max_redirects;
+
+        let mut request_builder = app.http_client.get(url);
+
+        request_builder =
+            request_builder.redirect(rquest::redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() >= max {
+                    return attempt.error("too many redirects");
+                }
+
+                let target_url = attempt.url().to_string();
+
+                // Check if this redirect targets the callback URL
+                if target_url.starts_with(&callback_prefix)
+                    || url_matches_callback(attempt.url(), &callback_prefix)
+                {
+                    if let Ok(mut captured) = captured_clone.lock() {
+                        *captured = Some(target_url);
+                    }
+                    return attempt.stop();
+                }
+
+                // Record the redirect hop
+                let from = attempt
+                    .previous()
+                    .last()
+                    .map(|u| u.to_string())
+                    .unwrap_or_default();
+                let status = attempt.status().as_u16();
+                if let Ok(mut hops) = hops_clone.lock() {
+                    hops.push(RedirectHop {
+                        from,
+                        to: target_url,
+                        status,
+                    });
+                }
+
+                attempt.follow()
+            }));
+
+        let request = request_builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("failed to build OAuth navigation request: {e}"))?;
+
+        let response = app
+            .http_client
+            .execute(request)
+            .await
+            .map_err(|e| anyhow::anyhow!("OAuth navigation request failed: {e}"))?;
+
+        // Check if we captured a redirect to the callback URL
+        let captured = captured_redirect.lock().unwrap().take();
+
+        if let Some(callback_target) = captured {
+            let parsed = Url::parse(&callback_target)
+                .map_err(|e| anyhow::anyhow!("failed to parse callback URL: {e}"))?;
+
+            let params: std::collections::HashMap<String, String> =
+                parsed.query_pairs().into_owned().collect();
+
+            let code = params.get("code").cloned().ok_or_else(|| {
+                anyhow::anyhow!("callback URL missing 'code' parameter: {}", callback_target)
+            })?;
+            let state = params.get("state").cloned().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "callback URL missing 'state' parameter: {}",
+                    callback_target
+                )
+            })?;
+
+            return Ok(OAuthNavigateResult::Callback {
+                url: callback_target,
+                code,
+                state,
+            });
+        }
+
+        // No redirect captured — landed on an intermediate page (login form, etc.)
+        let status = response.status().as_u16();
+        let final_url = response.url().to_string();
+        let body_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read response body: {e}"))?;
+        let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+
+        let html = Html::parse_document(&body_str);
+
+        let page = Self {
+            url: final_url,
+            status,
+            content_type: Some("text/html".to_string()),
+            html,
+            base_url: url.to_string(),
+            csp: None,
+            frame_tree: None,
+            cached_tree: OnceCell::new(),
+            redirect_chain: None,
+        };
+
+        Ok(OAuthNavigateResult::Page(page))
+    }
+}
+
+/// Check if a URL matches the callback URL by comparing scheme+host+port+path.
+fn url_matches_callback(url: &url::Url, callback_prefix: &str) -> bool {
+    let Ok(cb_url) = url::Url::parse(callback_prefix) else {
+        return url.as_str().starts_with(callback_prefix);
+    };
+
+    url.scheme() == cb_url.scheme()
+        && url.host() == cb_url.host()
+        && url.port() == cb_url.port()
+        && url.path() == cb_url.path()
+}
+
+/// Map `ResourceType` to `ResourceKind` for scheduling.
+fn resource_kind(rt: &ResourceType) -> ResourceKind {
+    match rt {
+        ResourceType::Document => ResourceKind::Document,
+        ResourceType::Stylesheet => ResourceKind::Stylesheet,
+        ResourceType::Script => ResourceKind::Script,
+        ResourceType::Image => ResourceKind::Image,
+        ResourceType::Font => ResourceKind::Font,
+        ResourceType::Media => ResourceKind::Media,
+        _ => ResourceKind::Other,
+    }
+}
+
+/// Map `ResourceType` to a priority band (lower = higher priority).
+///
+/// | Band       | Value | Types                        |
+/// |------------|-------|------------------------------|
+/// | Critical   | 0     | Document, Stylesheet         |
+/// | High       | 32    | Script, Font                 |
+/// | Normal     | 96    | Fetch, Xhr, WebSocket, Other |
+/// | Low        | 160   | Image                        |
+/// | Background | 224   | Media                        |
+fn resource_type_priority(rt: &ResourceType) -> u8 {
+    match rt {
+        ResourceType::Document | ResourceType::Stylesheet => 0,
+        ResourceType::Script | ResourceType::Font => 32,
+        ResourceType::Image => 160,
+        ResourceType::Media => 224,
+        _ => 96,
+    }
+}
+
+impl FetchedResponse {
+    fn from_dedup_result(result: Arc<crate::dedup::DedupResult>) -> Self {
+        Self {
+            final_url: result.url.clone(),
+            status: result.status,
+            content_type: result.content_type.clone(),
+            resp_headers: result.headers.clone(),
+            http_version: result.http_version.clone(),
+            body_bytes: result.body.clone(),
+            redirect_hops: Vec::new(),
+            started_at: String::new(),
+            elapsed_ms: 0,
+        }
+    }
+
+    fn from_mock(url: &str, mock: &crate::intercept::MockResponse) -> Self {
+        let content_type = mock.headers.get("content-type").cloned();
+        Self {
+            final_url: url.to_string(),
+            status: mock.status,
+            content_type,
+            resp_headers: mock
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            http_version: String::new(),
+            body_bytes: mock.body.clone(),
+            redirect_hops: Vec::new(),
+            started_at: String::new(),
+            elapsed_ms: 0,
+        }
+    }
+
+    async fn into_page(
+        self,
+        app: &Arc<App>,
+        url_key: &str,
+        event_sink: Option<std::sync::Arc<dyn crate::parser::StreamingEventSink + Send + Sync>>,
+    ) -> anyhow::Result<Page> {
+        let is_pdf = self.content_type.as_ref().map_or(false, |ct| {
+            ct.split(';').next().unwrap_or(ct).trim().to_lowercase() == "application/pdf"
+        });
+
+        if is_pdf {
+            let body_size = self.body_bytes.len();
+            let config = app.config.read();
+            if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
+                app.dedup.remove(url_key);
+                anyhow::bail!(
+                    "PDF size ({} bytes) exceeds sandbox limit ({} bytes)",
+                    body_size,
+                    config.sandbox.max_page_size
+                );
+            }
+            return Page::from_pdf_bytes(
+                &self.body_bytes,
+                &self.final_url,
+                self.status,
+                self.content_type,
+            );
+        }
+
+        let body_str = String::from_utf8_lossy(&self.body_bytes).to_string();
+        let body_size = body_str.len();
+
+        if crate::feed::is_feed_content(body_str.as_bytes(), self.content_type.as_deref()) {
+            let config = app.config.read();
+            if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
+                app.dedup.remove(url_key);
+                anyhow::bail!(
+                    "Feed size ({} bytes) exceeds sandbox limit ({} bytes)",
+                    body_size,
+                    config.sandbox.max_page_size
+                );
+            }
+            return Page::from_feed_bytes(
+                body_str.as_bytes(),
+                &self.final_url,
+                self.status,
+                self.content_type,
+            );
+        }
+
+        let config = app.config.read();
+        if config.sandbox.max_page_size > 0 && body_size > config.sandbox.max_page_size {
+            app.dedup.remove(url_key);
+            anyhow::bail!(
+                "Page size ({} bytes) exceeds sandbox limit ({} bytes)",
+                body_size,
+                config.sandbox.max_page_size
+            );
+        }
+
+        validate_content_type_pub(self.content_type.as_deref(), &self.final_url)?;
+
+        let push_enabled = config.push.enable_push && !config.sandbox.disable_push;
+        let csp_policy = config.csp.parse_policy(&self.resp_headers);
+        drop(config);
+
+        spawn_push_fetches(&app.http_client, &body_str, &self.final_url, push_enabled);
+
+        if let Some(ref sink) = event_sink {
+            if let Ok(mut stream_parser) =
+                crate::parser::streaming_semantic::StreamingHtmlParser::new(&self.final_url, None)
+            {
+                if let Ok(new_nodes) = stream_parser.feed(&self.body_bytes) {
+                    for node in &new_nodes {
+                        sink.emit(node.clone());
+                    }
+                }
+            }
+        }
+
+        let html = Html::parse_document(&body_str);
+        let base_url = Page::extract_base_url(&html, &self.final_url, csp_policy.as_ref());
+
+        let config = app.config.read();
+        let frame_tree = if config.parse_iframes {
+            let max_depth = config.max_iframe_depth;
+            drop(config);
+            Some(
+                FrameTree::build(
+                    html.clone(),
+                    &self.final_url,
+                    &base_url,
+                    &app.http_client,
+                    max_depth,
+                )
+                .await,
+            )
+        } else {
+            drop(config);
+            None
+        };
+
+        Ok(Page {
+            url: self.final_url,
+            status: self.status,
+            content_type: self.content_type,
+            html,
+            base_url,
+            csp: csp_policy,
+            frame_tree,
+            cached_tree: OnceCell::new(),
+            redirect_chain: if self.redirect_hops.is_empty() {
+                None
+            } else {
+                Some(RedirectChain {
+                    hops: self.redirect_hops,
+                })
+            },
+        })
     }
 }

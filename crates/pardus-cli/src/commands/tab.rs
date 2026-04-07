@@ -26,7 +26,11 @@ pub async fn list(browser: &pardus_core::Browser, format: OutputFormatArg) -> Re
 }
 
 /// Open a new tab with proxy configuration
-pub async fn open_with_config(url: &str, js: bool, proxy_config: pardus_core::ProxyConfig) -> Result<()> {
+pub async fn open_with_config(
+    url: &str,
+    js: bool,
+    proxy_config: pardus_core::ProxyConfig,
+) -> Result<()> {
     let mut browser_config = pardus_core::BrowserConfig::default();
     browser_config.proxy = proxy_config;
     let mut browser = pardus_core::Browser::new(browser_config)?;
@@ -35,7 +39,12 @@ pub async fn open_with_config(url: &str, js: bool, proxy_config: pardus_core::Pr
     } else {
         browser.navigate(url).await?
     };
-    println!("Tab {}: {} — {}", tab.id, tab.url, tab.title.as_deref().unwrap_or("(no title)"));
+    println!(
+        "Tab {}: {} — {}",
+        tab.id,
+        tab.url,
+        tab.title.as_deref().unwrap_or("(no title)")
+    );
     Ok(())
 }
 

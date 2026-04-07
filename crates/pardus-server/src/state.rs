@@ -1,13 +1,11 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Result;
-use tokio::sync::{broadcast, mpsc, oneshot};
-
 use pardus_core::{
     Browser, BrowserConfig, CookieEntry, ElementHandle, FormState, PageSnapshot, ScrollDirection,
 };
 use pardus_debug::NetworkRecord;
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::events::ServerEvent;
 
@@ -220,28 +218,24 @@ async fn handle_cmd(
                 }
             }
         }
-        BrowserCmd::CurrentPage { reply } => {
-            match browser.current_page() {
-                Some(p) => {
-                    let _ = reply.send(Ok(BrowserResponse::PageSnapshot(p.snapshot())));
-                }
-                None => {
-                    let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
-                }
+        BrowserCmd::CurrentPage { reply } => match browser.current_page() {
+            Some(p) => {
+                let _ = reply.send(Ok(BrowserResponse::PageSnapshot(p.snapshot())));
             }
-        }
-        BrowserCmd::Html { reply } => {
-            match browser.current_page() {
-                Some(p) => {
-                    let _ = reply.send(Ok(BrowserResponse::Html {
-                        html: p.html.html(),
-                    }));
-                }
-                None => {
-                    let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
-                }
+            None => {
+                let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
             }
-        }
+        },
+        BrowserCmd::Html { reply } => match browser.current_page() {
+            Some(p) => {
+                let _ = reply.send(Ok(BrowserResponse::Html {
+                    html: p.html.html(),
+                }));
+            }
+            None => {
+                let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
+            }
+        },
         BrowserCmd::ListTabs { reply } => {
             let tabs: Vec<serde_json::Value> = browser
                 .list_tabs()
@@ -250,20 +244,16 @@ async fn handle_cmd(
                 .collect();
             let _ = reply.send(Ok(BrowserResponse::Tabs { tabs }));
         }
-        BrowserCmd::OpenTab { url, reply } => {
-            match browser.open_tab(&url).await {
-                Ok(tab) => {
-                    let id = tab.id.as_u64();
-                    let _ = event_tx.send(ServerEvent::TabOpened {
-                        url: url.clone(),
-                    });
-                    let _ = reply.send(Ok(BrowserResponse::TabId { id }));
-                }
-                Err(e) => {
-                    let _ = reply.send(Err(e));
-                }
+        BrowserCmd::OpenTab { url, reply } => match browser.open_tab(&url).await {
+            Ok(tab) => {
+                let id = tab.id.as_u64();
+                let _ = event_tx.send(ServerEvent::TabOpened { url: url.clone() });
+                let _ = reply.send(Ok(BrowserResponse::TabId { id }));
             }
-        }
+            Err(e) => {
+                let _ = reply.send(Err(e));
+            }
+        },
         BrowserCmd::CloseTab { id, reply } => {
             let tab_id = pardus_core::TabId::from_u64(id);
             browser.close_tab(tab_id);
@@ -284,59 +274,53 @@ async fn handle_cmd(
                 }
             }
         }
-        BrowserCmd::SemanticTree { flat, reply } => {
-            match browser.current_page() {
-                Some(p) => {
-                    let tree = p.semantic_tree();
-                    if flat {
-                        let nodes = collect_interactive_flat(&tree.root);
-                        let _ = reply.send(Ok(BrowserResponse::SemanticTree(
-                            serde_json::to_value(nodes).unwrap_or_default(),
-                        )));
-                    } else {
-                        let _ = reply.send(Ok(BrowserResponse::SemanticTree(
-                            serde_json::to_value(&tree).unwrap_or_default(),
-                        )));
-                    }
-                }
-                None => {
-                    let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
-                }
-            }
-        }
-        BrowserCmd::SemanticElement { id, reply } => {
-            match browser.current_page() {
-                Some(p) => {
-                    let tree = p.semantic_tree();
-                    match find_element(&tree.root, id) {
-                        Some(node) => {
-                            let _ = reply.send(Ok(BrowserResponse::Element(Some(
-                                serde_json::to_value(node).unwrap_or_default(),
-                            ))));
-                        }
-                        None => {
-                            let _ = reply.send(Ok(BrowserResponse::Element(None)));
-                        }
-                    }
-                }
-                None => {
-                    let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
-                }
-            }
-        }
-        BrowserCmd::SemanticStats { reply } => {
-            match browser.current_page() {
-                Some(p) => {
-                    let tree = p.semantic_tree();
-                    let _ = reply.send(Ok(BrowserResponse::Stats(
-                        serde_json::to_value(&tree.stats).unwrap_or_default(),
+        BrowserCmd::SemanticTree { flat, reply } => match browser.current_page() {
+            Some(p) => {
+                let tree = p.semantic_tree();
+                if flat {
+                    let nodes = collect_interactive_flat(&tree.root);
+                    let _ = reply.send(Ok(BrowserResponse::SemanticTree(
+                        serde_json::to_value(nodes).unwrap_or_default(),
+                    )));
+                } else {
+                    let _ = reply.send(Ok(BrowserResponse::SemanticTree(
+                        serde_json::to_value(&tree).unwrap_or_default(),
                     )));
                 }
-                None => {
-                    let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
+            }
+            None => {
+                let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
+            }
+        },
+        BrowserCmd::SemanticElement { id, reply } => match browser.current_page() {
+            Some(p) => {
+                let tree = p.semantic_tree();
+                match find_element(&tree.root, id) {
+                    Some(node) => {
+                        let _ = reply.send(Ok(BrowserResponse::Element(Some(
+                            serde_json::to_value(node).unwrap_or_default(),
+                        ))));
+                    }
+                    None => {
+                        let _ = reply.send(Ok(BrowserResponse::Element(None)));
+                    }
                 }
             }
-        }
+            None => {
+                let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
+            }
+        },
+        BrowserCmd::SemanticStats { reply } => match browser.current_page() {
+            Some(p) => {
+                let tree = p.semantic_tree();
+                let _ = reply.send(Ok(BrowserResponse::Stats(
+                    serde_json::to_value(&tree.stats).unwrap_or_default(),
+                )));
+            }
+            None => {
+                let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
+            }
+        },
         BrowserCmd::Click {
             element_id,
             selector,
@@ -386,32 +370,28 @@ async fn handle_cmd(
             let result = browser.scroll(dir).await;
             let _ = reply.send(result.map(|_| BrowserResponse::Ok { ok: true }));
         }
-        BrowserCmd::InteractiveElements { reply } => {
-            match browser.current_page() {
-                Some(p) => {
-                    let _ = reply.send(Ok(BrowserResponse::InteractiveElements {
-                        elements: p.interactive_elements(),
-                    }));
-                }
-                None => {
-                    let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
-                }
+        BrowserCmd::InteractiveElements { reply } => match browser.current_page() {
+            Some(p) => {
+                let _ = reply.send(Ok(BrowserResponse::InteractiveElements {
+                    elements: p.interactive_elements(),
+                }));
             }
-        }
+            None => {
+                let _ = reply.send(Err(anyhow::anyhow!("No page loaded")));
+            }
+        },
         BrowserCmd::NetworkRequests { reply } => {
-            let log = browser.network_log.lock().unwrap();
+            let log = browser.network_log().lock().unwrap();
             let records = log.records.clone();
-            let _ = reply.send(Ok(BrowserResponse::NetworkRecords {
-                requests: records,
-            }));
+            let _ = reply.send(Ok(BrowserResponse::NetworkRecords { requests: records }));
         }
         BrowserCmd::ClearNetworkRequests { reply } => {
-            let mut log = browser.network_log.lock().unwrap();
+            let mut log = browser.network_log().lock().unwrap();
             log.records.clear();
             let _ = reply.send(Ok(BrowserResponse::Ok { ok: true }));
         }
         BrowserCmd::NetworkHar { reply } => {
-            let log = browser.network_log.lock().unwrap();
+            let log = browser.network_log().lock().unwrap();
             let har = pardus_debug::har::HarFile::from_network_log(&log);
             let val = serde_json::to_value(&har).unwrap_or_default();
             let _ = reply.send(Ok(BrowserResponse::Har(val)));

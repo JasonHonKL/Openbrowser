@@ -1,7 +1,6 @@
-use anyhow::Result;
-use std::path::PathBuf;
-use std::time::Instant;
+use std::{path::PathBuf, time::Instant};
 
+use anyhow::Result;
 use pardus_core::{BrowserConfig, FormState, InteractionResult, ScrollDirection};
 
 use crate::{InteractAction, OutputFormatArg};
@@ -74,8 +73,14 @@ pub async fn run_with_config(
             let result = browser.scroll(dir).await?;
             output_result(&result, &format);
         }
-        InteractAction::DispatchEvent { selector, event_type, init } => {
-            let result = browser.dispatch_event(&selector, &event_type, init.as_deref()).await?;
+        InteractAction::DispatchEvent {
+            selector,
+            event_type,
+            init,
+        } => {
+            let result = browser
+                .dispatch_event(&selector, &event_type, init.as_deref())
+                .await?;
             output_result(&result, &format);
         }
         InteractAction::Upload { selector, files } => {
@@ -148,7 +153,10 @@ fn output_result(result: &InteractionResult, format: &OutputFormatArg) {
                 eprintln!("Wait timeout: {} not found", selector);
             }
         }
-        InteractionResult::Scrolled { url, page: new_page } => {
+        InteractionResult::Scrolled {
+            url,
+            page: new_page,
+        } => {
             eprintln!("Scrolled to: {}", url);
             let tree = new_page.semantic_tree();
             match format {
@@ -178,7 +186,10 @@ fn output_result(result: &InteractionResult, format: &OutputFormatArg) {
                 }
             }
         }
-        InteractionResult::EventDispatched { selector, event_type } => {
+        InteractionResult::EventDispatched {
+            selector,
+            event_type,
+        } => {
             println!("Dispatched '{}' on {}", event_type, selector);
         }
         InteractionResult::FilesSet { selector, count } => {

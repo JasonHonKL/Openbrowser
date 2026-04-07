@@ -10,32 +10,35 @@ mod navigate;
 mod tabs;
 pub mod traits;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use pardus_debug::NetworkLog;
 
-use crate::config::BrowserConfig;
-use crate::interact::FormState;
-use crate::intercept::InterceptorManager;
-use crate::page::Page;
-use crate::push::PushCache;
-use crate::session::{CookieEntry, SessionStore};
-use crate::tab::{Tab, TabId};
+use crate::{
+    config::BrowserConfig,
+    interact::FormState,
+    intercept::InterceptorManager,
+    page::Page,
+    push::PushCache,
+    session::{CookieEntry, SessionStore},
+    tab::{Tab, TabId},
+};
 
 /// Unified headless browser for AI agents.
 ///
 /// Owns the HTTP client, tab state, and provides navigation + interaction
 /// as a single cohesive API. Every operation targets the active tab.
 pub struct Browser {
-    pub http_client: rquest::Client,
-    pub config: BrowserConfig,
-    pub network_log: Arc<Mutex<NetworkLog>>,
-    pub push_cache: Arc<PushCache>,
-    pub interceptors: InterceptorManager,
+    http_client: rquest::Client,
+    config: BrowserConfig,
+    network_log: Arc<Mutex<NetworkLog>>,
+    push_cache: Arc<PushCache>,
+    interceptors: InterceptorManager,
     /// Shared cookie jar for programmatic access.
-    pub cookie_jar: Arc<SessionStore>,
+    cookie_jar: Arc<SessionStore>,
     #[cfg(feature = "screenshot")]
     screenshot_handle: crate::screenshot::ScreenshotHandle,
     tabs: HashMap<TabId, Tab>,
@@ -74,10 +77,7 @@ impl Browser {
             config.viewport_height,
         );
 
-        let cookie_jar = Arc::new(
-            SessionStore::ephemeral("browser", &cache_dir)
-                .expect("failed to create cookie jar"),
-        );
+        let cookie_jar = Arc::new(SessionStore::ephemeral("browser", &cache_dir)?);
 
         Ok(Self {
             http_client,
@@ -105,10 +105,20 @@ impl Browser {
 // -----------------------------------------------------------------------
 
 impl Browser {
+    pub fn http_client(&self) -> &rquest::Client { &self.http_client }
+
+    pub fn config(&self) -> &BrowserConfig { &self.config }
+
+    pub fn network_log(&self) -> &Arc<Mutex<NetworkLog>> { &self.network_log }
+
+    pub fn push_cache(&self) -> &Arc<PushCache> { &self.push_cache }
+
+    pub fn interceptors(&self) -> &InterceptorManager { &self.interceptors }
+
+    pub fn interceptors_mut(&mut self) -> &mut InterceptorManager { &mut self.interceptors }
+
     /// Get the currently active tab.
-    pub fn active_tab(&self) -> Option<&Tab> {
-        self.active_tab.and_then(|id| self.tabs.get(&id))
-    }
+    pub fn active_tab(&self) -> Option<&Tab> { self.active_tab.and_then(|id| self.tabs.get(&id)) }
 
     /// Get the currently active tab (mutable).
     pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
@@ -116,14 +126,10 @@ impl Browser {
     }
 
     /// Get the active tab's page.
-    pub fn current_page(&self) -> Option<&Page> {
-        self.active_tab().and_then(|t| t.page.as_ref())
-    }
+    pub fn current_page(&self) -> Option<&Page> { self.active_tab().and_then(|t| t.page.as_ref()) }
 
     /// Get the active tab's URL.
-    pub fn current_url(&self) -> Option<&str> {
-        self.active_tab().map(|t| t.url.as_str())
-    }
+    pub fn current_url(&self) -> Option<&str> { self.active_tab().map(|t| t.url.as_str()) }
 
     /// Capture a full-page screenshot of the given URL.
     #[cfg(feature = "screenshot")]
@@ -143,7 +149,9 @@ impl Browser {
         selector: &str,
         opts: &crate::screenshot::ScreenshotOptions,
     ) -> anyhow::Result<Vec<u8>> {
-        self.screenshot_handle.capture_element(url, selector, opts).await
+        self.screenshot_handle
+            .capture_element(url, selector, opts)
+            .await
     }
 
     /// Get a reference to the screenshot handle (for CDP integration).
@@ -157,21 +165,21 @@ impl Browser {
     // -------------------------------------------------------------------
 
     /// Get a reference to the cookie jar.
-    pub fn cookie_jar(&self) -> &Arc<SessionStore> {
-        &self.cookie_jar
-    }
+    pub fn cookie_jar(&self) -> &Arc<SessionStore> { &self.cookie_jar }
 
     /// List all cookies in the jar.
-    pub fn all_cookies(&self) -> Vec<CookieEntry> {
-        self.cookie_jar.all_cookies()
-    }
+    pub fn all_cookies(&self) -> Vec<CookieEntry> { self.cookie_jar.all_cookies() }
 
     /// Get cookies for a specific URL (as header string value).
     pub fn cookies_for_url(&self, url: &str) -> Option<String> {
         let parsed: url::Url = url.parse().ok()?;
         self.cookie_jar.cookies(&parsed).and_then(|v| {
             let s = v.to_str().ok()?;
-            if s.is_empty() { None } else { Some(s.to_string()) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
         })
     }
 
@@ -186,14 +194,12 @@ impl Browser {
     }
 
     /// Clear all cookies.
-    pub fn clear_cookies(&self) {
-        self.cookie_jar.clear_cookies();
-    }
+    pub fn clear_cookies(&self) { self.cookie_jar.clear_cookies(); }
 }
 
 impl Default for Browser {
     fn default() -> Self {
         Self::new(BrowserConfig::default())
-            .expect("failed to create default Browser: TLS backend may be unavailable")
+            .unwrap_or_else(|e| panic!("failed to create default Browser: {e}"))
     }
 }

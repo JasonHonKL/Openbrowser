@@ -8,9 +8,8 @@ use std::sync::OnceLock;
 
 use deno_core::RuntimeOptions;
 
-use crate::sandbox::JsSandboxMode;
-
 use super::extension::pardus_dom;
+use crate::sandbox::JsSandboxMode;
 
 fn create_bootstrap_snapshot(bootstrap_code: &'static str) -> &'static [u8] {
     let mut runtime = deno_core::JsRuntimeForSnapshot::new(RuntimeOptions {
@@ -18,12 +17,12 @@ fn create_bootstrap_snapshot(bootstrap_code: &'static str) -> &'static [u8] {
         ..Default::default()
     });
     if let Err(e) = runtime.execute_script("bootstrap.js", bootstrap_code) {
-        eprintln!("[JS] Bootstrap snapshot creation failed: {e}");
+        tracing::warn!("[JS] Bootstrap snapshot creation failed: {e}");
         // Fall back: return an empty slice — runtime will bootstrap normally
         return &[];
     }
     let snapshot = runtime.snapshot();
-    eprintln!("[JS] Bootstrap snapshot created ({} bytes)", snapshot.len());
+    tracing::debug!("[JS] Bootstrap snapshot created ({} bytes)", snapshot.len());
     Box::leak(snapshot)
 }
 
@@ -39,9 +38,5 @@ pub fn get_bootstrap_snapshot(mode: &JsSandboxMode) -> Option<&'static [u8]> {
         _ => FULL_SNAPSHOT.get_or_init(|| create_bootstrap_snapshot(include_str!("bootstrap.js"))),
     };
     // Empty slice means snapshot creation failed — signal caller to bootstrap normally
-    if bytes.is_empty() {
-        None
-    } else {
-        Some(bytes)
-    }
+    if bytes.is_empty() { None } else { Some(bytes) }
 }

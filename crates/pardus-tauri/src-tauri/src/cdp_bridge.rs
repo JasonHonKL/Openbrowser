@@ -1,19 +1,20 @@
-use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tauri::{Emitter, AppHandle};
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tauri::{AppHandle, Emitter};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio_tungstenite::tungstenite;
 
 const EVENT_BUFFER_SIZE: usize = 500;
 const RECONNECT_BASE_MS: u64 = 1000;
 const RECONNECT_MAX_MS: u64 = 30000;
 const INIT_COMMAND_COUNT: u64 = 4;
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CdpEventRecord {
@@ -54,12 +55,7 @@ impl CdpBridge {
         }
     }
 
-    pub async fn connect(
-        &self,
-        instance_id: String,
-        port: u16,
-        app_handle: tauri::AppHandle,
-    ) {
+    pub async fn connect(&self, instance_id: String, port: u16, app_handle: tauri::AppHandle) {
         let mut instances = self.instances.write().await;
         if instances.contains_key(&instance_id) {
             return;
@@ -225,14 +221,8 @@ async fn run_bridge_loop(
                     }),
                 );
 
-                if let Err(e) = run_connected(
-                    &instances,
-                    &instance_id,
-                    ws_stream,
-                    &app_handle,
-                    &cancel,
-                )
-                .await
+                if let Err(e) =
+                    run_connected(&instances, &instance_id, ws_stream, &app_handle, &cancel).await
                 {
                     tracing::warn!(
                         instance_id = %instance_id,
@@ -404,7 +394,10 @@ async fn handle_cdp_message(
 
     let record = CdpEventRecord {
         method: method.clone(),
-        params: value.get("params").cloned().unwrap_or(serde_json::json!({})),
+        params: value
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::json!({})),
         timestamp,
     };
 

@@ -3,14 +3,10 @@
 //! The TabManager owns all tabs and manages their lifecycle.
 //! It uses a shared App for HTTP resources.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use crate::app::App;
-use crate::config::BrowserConfig;
-
-use super::{Tab, TabId, TabState};
-use super::tab::TabConfig;
+use super::{Tab, TabId, TabState, tab::TabConfig};
+use crate::{app::App, config::BrowserConfig};
 
 /// Errors that can occur in tab management
 #[derive(Debug, thiserror::Error)]
@@ -54,8 +50,8 @@ impl std::fmt::Debug for TabManager {
 
 impl TabManager {
     /// Create a new TabManager with default App configuration
-    pub fn new() -> Self {
-        Self::with_app(Arc::new(App::new(BrowserConfig::default())))
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self::with_app(Arc::new(App::new(BrowserConfig::default())?)))
     }
 
     /// Create a new TabManager with the given App
@@ -94,11 +90,7 @@ impl TabManager {
     }
 
     /// Create a new tab with custom configuration
-    pub fn create_tab_with_config(
-        &mut self,
-        url: impl Into<String>,
-        config: TabConfig,
-    ) -> TabId {
+    pub fn create_tab_with_config(&mut self, url: impl Into<String>, config: TabConfig) -> TabId {
         let tab = Tab::with_config(url, config);
         let id = tab.id;
         self.tabs.insert(id, tab);
@@ -108,23 +100,16 @@ impl TabManager {
     /// Create a tab, activate it, and load the page
     ///
     /// This is a convenience method for the common case.
-    pub async fn open_tab(
-        &mut self,
-        url: impl Into<String>,
-    ) -> anyhow::Result<&Tab> {
+    pub async fn open_tab(&mut self, url: impl Into<String>) -> anyhow::Result<&Tab> {
         let id = self.create_tab(url);
         self.switch_to(id).await
     }
 
     /// Get a reference to a tab by ID
-    pub fn get(&self, id: TabId) -> Option<&Tab> {
-        self.tabs.get(&id)
-    }
+    pub fn get(&self, id: TabId) -> Option<&Tab> { self.tabs.get(&id) }
 
     /// Get a mutable reference to a tab by ID
-    pub fn get_mut(&mut self, id: TabId) -> Option<&mut Tab> {
-        self.tabs.get_mut(&id)
-    }
+    pub fn get_mut(&mut self, id: TabId) -> Option<&mut Tab> { self.tabs.get_mut(&id) }
 
     /// Check if a tab has exceeded its memory limit
     pub fn check_memory_limit(&self, id: TabId) -> Result<bool, TabManagerError> {
@@ -168,10 +153,7 @@ impl TabManager {
     /// Switch to a different tab (activate it and load if needed)
     ///
     /// Returns the active tab. Loads the page if it hasn't been loaded yet.
-    pub async fn switch_to(
-        &mut self,
-        id: TabId,
-    ) -> anyhow::Result<&Tab> {
+    pub async fn switch_to(&mut self, id: TabId) -> anyhow::Result<&Tab> {
         // Check if tab exists
         if !self.tabs.contains_key(&id) {
             return Err(TabManagerError::TabNotFound(id).into());
@@ -179,7 +161,10 @@ impl TabManager {
 
         // Activate new
         self.active_tab = Some(id);
-        let tab = self.tabs.get_mut(&id).ok_or_else(|| TabManagerError::TabNotFound(id))?;
+        let tab = self
+            .tabs
+            .get_mut(&id)
+            .ok_or_else(|| TabManagerError::TabNotFound(id))?;
         tab.activate();
 
         // Load if not already loaded
@@ -188,13 +173,14 @@ impl TabManager {
             tab.load(&self.app).await?;
         }
 
-        Ok(self.tabs.get(&id).ok_or_else(|| TabManagerError::TabNotFound(id))?)
+        Ok(self
+            .tabs
+            .get(&id)
+            .ok_or_else(|| TabManagerError::TabNotFound(id))?)
     }
 
     /// Get the currently active tab
-    pub fn active(&self) -> Option<&Tab> {
-        self.active_tab.and_then(|id| self.tabs.get(&id))
-    }
+    pub fn active(&self) -> Option<&Tab> { self.active_tab.and_then(|id| self.tabs.get(&id)) }
 
     /// Get the currently active tab (mutable)
     pub fn active_mut(&mut self) -> Option<&mut Tab> {
@@ -243,75 +229,74 @@ impl TabManager {
     }
 
     /// List all tabs
-    pub fn list(&self) -> Vec<&Tab> {
-        self.tabs.values().collect()
-    }
+    pub fn list(&self) -> Vec<&Tab> { self.tabs.values().collect() }
 
     /// Get tab count
-    pub fn len(&self) -> usize {
-        self.tabs.len()
-    }
+    pub fn len(&self) -> usize { self.tabs.len() }
 
     /// Check if there are any tabs
-    pub fn is_empty(&self) -> bool {
-        self.tabs.is_empty()
-    }
+    pub fn is_empty(&self) -> bool { self.tabs.is_empty() }
 
     /// Check if a tab exists
-    pub fn contains(&self, id: TabId) -> bool {
-        self.tabs.contains_key(&id)
-    }
+    pub fn contains(&self, id: TabId) -> bool { self.tabs.contains_key(&id) }
 
     /// Navigate the active tab to a new URL
-    pub async fn navigate_active(
-        &mut self,
-        url: &str,
-    ) -> anyhow::Result<&Tab> {
+    pub async fn navigate_active(&mut self, url: &str) -> anyhow::Result<&Tab> {
         let id = self.require_active()?.id;
-        let tab = self.tabs.get_mut(&id).ok_or_else(|| TabManagerError::TabNotFound(id))?;
+        let tab = self
+            .tabs
+            .get_mut(&id)
+            .ok_or_else(|| TabManagerError::TabNotFound(id))?;
         tab.navigate(&self.app, url).await?;
-        Ok(self.tabs.get(&id).ok_or_else(|| TabManagerError::TabNotFound(id))?)
+        Ok(self
+            .tabs
+            .get(&id)
+            .ok_or_else(|| TabManagerError::TabNotFound(id))?)
     }
 
     /// Reload the active tab
-    pub async fn reload_active(
-        &mut self,
-    ) -> anyhow::Result<&Tab> {
+    pub async fn reload_active(&mut self) -> anyhow::Result<&Tab> {
         let id = self.require_active()?.id;
-        let tab = self.tabs.get_mut(&id).ok_or_else(|| TabManagerError::TabNotFound(id))?;
+        let tab = self
+            .tabs
+            .get_mut(&id)
+            .ok_or_else(|| TabManagerError::TabNotFound(id))?;
         tab.reload(&self.app).await?;
-        Ok(self.tabs.get(&id).ok_or_else(|| TabManagerError::TabNotFound(id))?)
+        Ok(self
+            .tabs
+            .get(&id)
+            .ok_or_else(|| TabManagerError::TabNotFound(id))?)
     }
 
     /// Go back in the active tab's history
-    pub async fn go_back(
-        &mut self,
-    ) -> anyhow::Result<Option<&Tab>> {
+    pub async fn go_back(&mut self) -> anyhow::Result<Option<&Tab>> {
         let id = self.require_active()?.id;
-        let tab = self.tabs.get_mut(&id).ok_or_else(|| TabManagerError::TabNotFound(id))?;
+        let tab = self
+            .tabs
+            .get_mut(&id)
+            .ok_or_else(|| TabManagerError::TabNotFound(id))?;
         tab.go_back(&self.app).await?;
         Ok(self.active())
     }
 
     /// Go forward in the active tab's history
-    pub async fn go_forward(
-        &mut self,
-    ) -> anyhow::Result<Option<&Tab>> {
+    pub async fn go_forward(&mut self) -> anyhow::Result<Option<&Tab>> {
         let id = self.require_active()?.id;
-        let tab = self.tabs.get_mut(&id).ok_or_else(|| TabManagerError::TabNotFound(id))?;
+        let tab = self
+            .tabs
+            .get_mut(&id)
+            .ok_or_else(|| TabManagerError::TabNotFound(id))?;
         tab.go_forward(&self.app).await?;
         Ok(self.active())
     }
 
     /// Get the shared App instance
-    pub fn app(&self) -> &Arc<App> {
-        &self.app
-    }
+    pub fn app(&self) -> &Arc<App> { &self.app }
 }
 
 impl Default for TabManager {
     fn default() -> Self {
-        Self::new()
+        Self::new().unwrap_or_else(|e| panic!("failed to create default TabManager: {e}"))
     }
 }
 

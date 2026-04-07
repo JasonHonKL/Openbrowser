@@ -1,8 +1,10 @@
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
+
 use base64::Engine;
 use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-
 use rquest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -39,6 +41,7 @@ pub struct CookieEntry {
     pub path: String,
     pub http_only: bool,
     pub secure: bool,
+    pub same_site: Option<String>,
 }
 
 /// Result type alias for session operations.
@@ -108,9 +111,10 @@ impl SessionStore {
             match serde_json::from_str::<Vec<StoredHeader>>(&data) {
                 Ok(h) => h,
                 Err(e) => {
-                    eprintln!(
+                    tracing::warn!(
                         "[session] Warning: failed to parse headers for session '{}': {}",
-                        name, e
+                        name,
+                        e
                     );
                     Vec::new()
                 }
@@ -124,9 +128,10 @@ impl SessionStore {
             match serde_json::from_str::<HashMap<String, HashMap<String, String>>>(&data) {
                 Ok(ls) => ls,
                 Err(e) => {
-                    eprintln!(
+                    tracing::warn!(
                         "[session] Warning: failed to parse localStorage for session '{}': {}",
-                        name, e
+                        name,
+                        e
                     );
                     HashMap::new()
                 }
@@ -261,9 +266,7 @@ impl SessionStore {
         jar.iter_unexpired().count()
     }
 
-    pub fn header_count(&self) -> usize {
-        self.headers.lock().len()
-    }
+    pub fn header_count(&self) -> usize { self.headers.lock().len() }
 
     pub fn local_storage_origins(&self) -> Vec<String> {
         let ls = self.local_storage.lock();
@@ -402,6 +405,13 @@ impl SessionStore {
                 let path = cookie.path().unwrap_or("/").to_string();
                 let http_only = cookie.http_only().unwrap_or(false);
                 let secure = cookie.secure().unwrap_or(false);
+                let same_site = cookie.same_site().map(|ss| {
+                    match ss {
+                        rquest::cookie::SameSite::Strict => "Strict".to_string(),
+                        rquest::cookie::SameSite::Lax => "Lax".to_string(),
+                        rquest::cookie::SameSite::None => "None".to_string(),
+                    }
+                });
                 CookieEntry {
                     name,
                     value,
@@ -409,6 +419,7 @@ impl SessionStore {
                     path,
                     http_only,
                     secure,
+                    same_site,
                 }
             })
             .collect()
@@ -416,10 +427,7 @@ impl SessionStore {
 
     /// Set a cookie programmatically by name, value, domain, and path.
     pub fn set_cookie(&self, name: &str, value: &str, domain: &str, path: &str) {
-        let header = format!(
-            "{}={}; Domain={}; Path={}",
-            name, value, domain, path
-        );
+        let header = format!("{}={}; Domain={}; Path={}", name, value, domain, path);
         let url_str = if domain.starts_with('.') {
             format!("https://{}", &domain[1..])
         } else {
@@ -440,13 +448,9 @@ impl SessionStore {
     }
 
     /// Get a reference to the inner cookie store for rquest integration.
-    pub fn jar(&self) -> &Mutex<cookie_store::CookieStore> {
-        &self.jar
-    }
+    pub fn jar(&self) -> &Mutex<cookie_store::CookieStore> { &self.jar }
 
-    pub fn session_dir(&self) -> &Path {
-        &self.session_dir
-    }
+    pub fn session_dir(&self) -> &Path { &self.session_dir }
 
     pub fn list_sessions(cache_dir: &Path) -> SessionResult<Vec<String>> {
         let sessions_dir = cache_dir.join("sessions");
@@ -746,8 +750,7 @@ mod tests {
 
     #[test]
     fn test_base64_encode() {
-        use base64::engine::general_purpose::STANDARD as B64;
-        use base64::Engine;
+        use base64::{Engine, engine::general_purpose::STANDARD as B64};
         assert_eq!(B64.encode("user:pass"), "dXNlcjpwYXNz");
         assert_eq!(B64.encode(""), "");
         assert_eq!(B64.encode("a"), "YQ==");

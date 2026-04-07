@@ -11,6 +11,7 @@ use crate::domain::emulation::EmulationDomain;
 use crate::domain::input::InputDomain;
 use crate::domain::log::LogDomain;
 use crate::domain::network::NetworkDomain;
+use crate::domain::oauth::OAuthDomain;
 use crate::domain::pardus_ext::PardusDomain;
 use crate::domain::page::PageDomain;
 use crate::domain::performance::PerformanceDomain;
@@ -72,6 +73,7 @@ impl CdpServer {
         tracing::info!("Max connections: {}", self.max_connections);
 
         let event_bus = Arc::new(EventBus::new(1024));
+        let oauth_sessions = Arc::new(Mutex::new(pardus_core::oauth::OAuthSessionManager::new()));
         let registry = build_registry();
         let router = Arc::new(CdpRouter::new(registry));
         let conn_semaphore = Arc::new(Semaphore::new(self.max_connections));
@@ -103,11 +105,12 @@ impl CdpServer {
 
                         let router = router.clone();
                         let event_bus = event_bus.clone();
+                        let oauth_sessions = oauth_sessions.clone();
                         let app = self.app.clone();
                         let timeout = self.timeout;
 
                         tokio::task::spawn_local(async move {
-                            if let Err(e) = handle_connection(stream, peer_addr, router, event_bus, app, timeout).await {
+                            if let Err(e) = handle_connection(stream, peer_addr, router, event_bus, oauth_sessions, app, timeout).await {
                                 tracing::error!("Connection error from {}: {}", peer_addr, e);
                             }
                             drop(permit);
@@ -131,6 +134,7 @@ async fn handle_connection(
     peer_addr: std::net::SocketAddr,
     router: Arc<CdpRouter>,
     event_bus: Arc<EventBus>,
+    oauth_sessions: Arc<Mutex<pardus_core::oauth::OAuthSessionManager>>,
     app: Arc<pardus_core::App>,
     timeout: u64,
 ) -> anyhow::Result<()> {
@@ -172,6 +176,7 @@ async fn handle_connection(
                 targets,
                 event_bus.clone(),
                 node_map,
+                oauth_sessions,
             ));
             crate::transport::ws::handle_websocket(
                 ws_stream, router, ctx, event_bus, timeout,
@@ -201,5 +206,6 @@ fn build_registry() -> DomainRegistry {
     registry.register(Box::new(SecurityDomain));
     registry.register(Box::new(PerformanceDomain));
     registry.register(Box::new(PardusDomain));
+    registry.register(Box::new(OAuthDomain));
     registry
 }

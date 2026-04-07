@@ -20,6 +20,8 @@ pub struct TargetEntry {
     pub js_enabled: bool,
     /// Serialized `FrameTree` JSON. Populated when iframe parsing is enabled.
     pub frame_tree_json: Option<String>,
+    /// Accumulated form field values from `type` commands, keyed by field name.
+    pub form_state: std::collections::HashMap<String, String>,
 }
 
 /// Shared state available to all domain handlers. All fields are Send+Sync.
@@ -33,6 +35,8 @@ pub struct DomainContext {
     pub event_bus: Arc<EventBus>,
     /// Node map for this session (backendNodeId <-> selector).
     pub node_map: Arc<Mutex<NodeMap>>,
+    /// OAuth session manager shared across all CDP connections.
+    pub oauth_sessions: Arc<Mutex<pardus_core::oauth::OAuthSessionManager>>,
     /// Screenshot handle for captureScreenshot support (feature-gated).
     #[cfg(feature = "screenshot")]
     pub screenshot_handle: pardus_core::screenshot::ScreenshotHandle,
@@ -45,6 +49,7 @@ impl DomainContext {
         targets: Arc<Mutex<HashMap<String, TargetEntry>>>,
         event_bus: Arc<EventBus>,
         node_map: Arc<Mutex<NodeMap>>,
+        oauth_sessions: Arc<Mutex<pardus_core::oauth::OAuthSessionManager>>,
     ) -> Self {
         #[cfg(feature = "screenshot")]
         let screenshot_handle = {
@@ -60,6 +65,7 @@ impl DomainContext {
             targets,
             event_bus,
             node_map,
+            oauth_sessions,
             #[cfg(feature = "screenshot")]
             screenshot_handle,
         }
@@ -119,6 +125,7 @@ impl DomainContext {
             title,
             js_enabled: true,
             frame_tree_json,
+            form_state: std::collections::HashMap::new(),
         });
         Ok(())
     }
@@ -143,6 +150,7 @@ impl DomainContext {
             title,
             js_enabled: false,
             frame_tree_json: None,
+            form_state: std::collections::HashMap::new(),
         });
     }
 
@@ -200,6 +208,7 @@ pub mod emulation;
 pub mod input;
 pub mod log;
 pub mod network;
+pub mod oauth;
 pub mod pardus_ext;
 pub mod page;
 pub mod performance;

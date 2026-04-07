@@ -6,8 +6,14 @@ import type {
   TreeStats,
   BridgeStatus,
   AgentStatus,
+  AgentConfig,
   CdpEvent,
   StatusChange,
+  AgentThinkingEvent,
+  AgentToolCallEvent,
+  AgentToolResultEvent,
+  AgentErrorEvent,
+  AgentCompleteEvent,
 } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +88,46 @@ export async function setAgentStatus(
 }
 
 // ---------------------------------------------------------------------------
+// AI Agent
+// ---------------------------------------------------------------------------
+
+export async function startAgent(
+  instanceId: string,
+  config: AgentConfig,
+): Promise<void> {
+  return invoke("start_agent", { instanceId, config });
+}
+
+export async function sendAgentMessage(
+  instanceId: string,
+  message: string,
+): Promise<{ content?: string; error?: string }> {
+  return invoke("send_agent_message", { instanceId, message });
+}
+
+export async function stopAgent(instanceId: string): Promise<void> {
+  return invoke("stop_agent", { instanceId });
+}
+
+export async function clearAgentHistory(instanceId: string): Promise<void> {
+  return invoke("clear_agent_history", { instanceId });
+}
+
+export async function shutdownAgent(instanceId: string): Promise<void> {
+  return invoke("shutdown_agent", { instanceId });
+}
+
+export async function getAgentStatus(
+  instanceId: string,
+): Promise<string | null> {
+  return invoke("get_agent_status", { instanceId });
+}
+
+export async function isAgentRunning(instanceId: string): Promise<boolean> {
+  return invoke("is_agent_running", { instanceId });
+}
+
+// ---------------------------------------------------------------------------
 // Browser windows
 // ---------------------------------------------------------------------------
 
@@ -94,6 +140,17 @@ export async function openBrowserWindow(
 
 export async function closeBrowserWindow(instanceId: string): Promise<void> {
   return invoke("close_browser_window", { instanceId });
+}
+
+// ---------------------------------------------------------------------------
+// Agent resume (take-over flow)
+// ---------------------------------------------------------------------------
+
+export async function resumeAgent(
+  instanceId: string,
+  message: string,
+): Promise<{ content?: string; error?: string }> {
+  return invoke("resume_agent", { instanceId, message });
 }
 
 // ---------------------------------------------------------------------------
@@ -161,4 +218,50 @@ export function onCdpBridgeDisconnected(
     "cdp-bridge-disconnected",
     (e) => handler(e.payload),
   );
+}
+
+// ---------------------------------------------------------------------------
+// AI Agent event listeners
+// ---------------------------------------------------------------------------
+
+export function onAgentThinking(
+  handler: (event: AgentThinkingEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentThinkingEvent>("agent-thinking", (e) => handler(e.payload));
+}
+
+export function onAgentToolCall(
+  handler: (event: AgentToolCallEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentToolCallEvent>("agent-tool-call", (e) => handler(e.payload));
+}
+
+export function onAgentToolResult(
+  handler: (event: AgentToolResultEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentToolResultEvent>("agent-tool-result", (e) => handler(e.payload));
+}
+
+export function onAgentError(
+  handler: (event: AgentErrorEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentErrorEvent>("agent-error", (e) => handler(e.payload));
+}
+
+export function onAgentComplete(
+  handler: (event: AgentCompleteEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<AgentCompleteEvent>("agent-complete", (e) => handler(e.payload));
+}
+
+export function onAgentShutdown(
+  handler: (event: { instance_id: string }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ instance_id: string }>("agent-shutdown", (e) => handler(e.payload));
+}
+
+export function onAgentHistoryCleared(
+  handler: (event: { instance_id: string }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ instance_id: string }>("agent-history-cleared", (e) => handler(e.payload));
 }

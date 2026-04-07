@@ -1,8 +1,7 @@
 //! Tab lifecycle management: create, switch, close, list.
 
-use crate::tab::{Tab, TabId, TabState};
-
 use super::Browser;
+use crate::tab::{Tab, TabId, TabState};
 
 impl Browser {
     /// Create a new tab with the given URL (does not load it).
@@ -37,16 +36,27 @@ impl Browser {
             return Err(anyhow::anyhow!("Tab not found: {}", id));
         }
         self.active_tab = Some(id);
-        let tab = self.tabs.get_mut(&id)
+        let tab = self
+            .tabs
+            .get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("tab missing after verification"))?;
         tab.activate();
 
         let needs_load = tab.page.is_none() && matches!(tab.state, TabState::Loading);
         if needs_load {
-            tab.load_with_client(&self.http_client, &self.network_log, &self.config, tab.config.js_enabled, tab.config.wait_ms).await?;
+            tab.load_with_client(
+                &self.http_client,
+                &self.network_log,
+                &self.config,
+                tab.config.js_enabled,
+                tab.config.wait_ms,
+            )
+            .await?;
         }
 
-        Ok(self.tabs.get(&id)
+        Ok(self
+            .tabs
+            .get(&id)
             .ok_or_else(|| anyhow::anyhow!("tab missing after verification"))?)
     }
 
@@ -81,12 +91,8 @@ impl Browser {
     }
 
     /// List all tabs.
-    pub fn list_tabs(&self) -> Vec<&Tab> {
-        self.tabs.values().collect()
-    }
+    pub fn list_tabs(&self) -> Vec<&Tab> { self.tabs.values().collect() }
 
     /// Number of open tabs.
-    pub fn tab_count(&self) -> usize {
-        self.tabs.len()
-    }
+    pub fn tab_count(&self) -> usize { self.tabs.len() }
 }

@@ -41,18 +41,34 @@ Core engine, CLI, and all major subsystems are stable. Summary of shipped featur
 
 **Phase 1 — Semantic Tree Viewer + CAPTCHA Handoff (current)**
 - [ ] Semantic tree viewer panel — render ARIA role tree with interactive nodes in Tauri dashboard
-- [ ] Per-instance controls — URL bar, navigate, agent status (idle/running/waiting-challenge)
-- [ ] CAPTCHA handoff — when agent hits a challenge, popup OS webview (WKWebView/WebKitGTK/WebView2) for user to solve, then sync cookies back to headless browser via CDP `Network.setCookie`
-- [ ] Cookie bridge — `tokio-tungstenite` WebSocket client to inject cookies into headless CDP server
-- [ ] Agent action log — real-time log of agent actions (navigate, click, type, wait) streamed from CDP events
-- [ ] Cross-platform — dashboard is pure HTML/CSS (no OS webview dependency for primary view); CAPTCHA popup uses OS webview only when needed
+- [x] Per-instance controls — URL bar, navigate, agent status (idle/running/waiting-challenge)
+- [x] CAPTCHA handoff — when agent hits a challenge, popup OS webview (WKWebView/WebKitGTK/WebView2) for user to solve, then sync cookies back to headless browser via CDP `Network.setCookie`
+- [x] Cookie bridge — `tokio-tungstenite` WebSocket client to inject cookies into headless CDP server
+- [x] Agent action log — real-time log of agent actions (navigate, click, type, wait) streamed from CDP events
+- [x] Cross-platform — dashboard is pure HTML/CSS (no OS webview dependency for primary view); CAPTCHA popup uses OS webview only when needed
 
-**Phase 2 — Multi-Agent Dashboard**
-- [ ] Multiple concurrent agent instances — spawn/manage N agents in one window
-- [ ] Agent status grid — see all agents at a glance with status indicators (running, idle, stuck, CAPTCHA)
-- [ ] Live agent action streaming — watch each agent's actions in real-time via CDP event bus
-- [ ] Take-over button — pause agent, let user manually interact, then resume agent
-- [ ] Agent conversation panel — show the LLM conversation alongside browser actions
+**Phase 1.5 — Webview ↔ Headless Browser Sync (current)**
+- [x] Click interceptor — JS injected into OS webview captures clicks on links, buttons, inputs and forwards to Pardus headless browser via Tauri events
+- [x] CSS selector generator — produces unique selectors for any clicked DOM element (ID, name, type, nth-of-type)
+- [x] Form input sync — debounced `input` event tracking syncs typed values to headless browser form state
+- [x] Select/checkbox/radio change tracking — `change` events forwarded as `select`/`toggle` CDP actions
+- [x] Form submission interception — `submit` events captured and forwarded as `submit` CDP actions
+- [x] Navigation sync — when headless browser navigates after a forwarded action, OS webview is updated to the new URL
+- [x] Href fallback — when CSS selector doesn't match in headless browser, falls back to direct URL navigation
+- [x] Action log events — `webview-action-log` Tauri events emitted for frontend action log integration
+- [x] Pardus UI guard — toolbar and challenge banner clicks are not intercepted
+
+**Phase 2 — Multi-Agent Dashboard (current)**
+- [x] Multiple concurrent agent instances — spawn/manage N agents in one window
+- [x] Agent status grid — grid view with AgentCard components showing status, URL, last action per instance
+- [x] Live agent action streaming — GlobalActionStream component aggregates actions across all instances with color-coding
+- [x] Take-over button — pause agent (stop_agent), open browser window for manual interaction, resume via resume_agent command
+- [x] Agent conversation panel — ChatPanel shows LLM conversation per instance (already existed)
+- [x] Per-instance state — AgentContext restructured to Map<string, InstanceState> with per-instance messages, events, tree
+- [x] Grid/detail view modes — grid overview (default for multi-instance) + drill-down detail view
+- [x] View mode toggle — sidebar toggle between grid and detail views
+- [x] Backend resume_agent command — Tauri command that sends message to agent sidecar and updates status
+- [x] TakeOverBar component — orange banner during manual control with Resume/Open Browser buttons
 
 **Phase 3 — Rendered View (Optional)**
 - [ ] Rendered page tab — OS webview shows actual page pixels (WKWebView on macOS, WebKitGTK on Linux, WebView2 on Windows)

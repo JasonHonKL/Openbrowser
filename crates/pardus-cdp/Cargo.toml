@@ -27,3 +27,6 @@ chrono = { workspace = true }
 default = []
 screenshot = ["pardus-core/screenshot"]
 tls-pinning = ["pardus-core/tls-pinning"]
+
+[dev-dependencies]
+mockito = "1"

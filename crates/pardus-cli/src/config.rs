@@ -68,7 +68,8 @@ fn parse_pin_spec(spec: &str) -> Result<(Option<String>, CertPin)> {
         CertPin::ca_cert(rest, None)
     } else {
         anyhow::bail!(
-            "invalid pin spec '{}': expected 'sha256:HASH', 'sha384:HASH', 'sha512:HASH', or 'ca:BASE64_DER'",
+            "invalid pin spec '{}': expected 'sha256:HASH', 'sha384:HASH', 'sha512:HASH', or \
+             'ca:BASE64_DER'",
             spec
         );
     };

@@ -72,11 +72,19 @@ export class LLMClient {
     const message = choice.message;
 
     // Parse tool calls if present
-    const toolCalls = message.tool_calls?.map((call) => ({
-      id: call.id,
-      name: call.function.name,
-      arguments: JSON.parse(call.function.arguments) as Record<string, unknown>,
-    }));
+    const toolCalls = message.tool_calls?.map((call) => {
+      let arguments_: Record<string, unknown> = {};
+      try {
+        arguments_ = JSON.parse(call.function.arguments) as Record<string, unknown>;
+      } catch {
+        arguments_ = {};
+      }
+      return {
+        id: call.id,
+        name: call.function.name,
+        arguments: arguments_,
+      };
+    });
 
     return {
       content: message.content,

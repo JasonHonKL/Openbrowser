@@ -8,12 +8,12 @@
 //! `Browser` implements all traits directly (zero-cost — no `Box<dyn Trait>` overhead).
 //! Consumers can use `Browser` concretely or generically via `&mut dyn Interactor`.
 
-use crate::interact::actions::InteractionResult;
-use crate::interact::FormState;
-use crate::interact::ScrollDirection;
-use crate::tab::{Tab, TabId};
-use crate::tab::tab::TabConfig;
 use std::path::PathBuf;
+
+use crate::{
+    interact::{FormState, ScrollDirection, actions::InteractionResult},
+    tab::{Tab, TabId, tab::TabConfig},
+};
 
 /// Navigation operations.
 #[async_trait::async_trait]
@@ -44,7 +44,8 @@ pub trait Interactor: Send + Sync {
     async fn click_by_id(&mut self, id: usize) -> anyhow::Result<InteractionResult>;
 
     /// Type text into a form field.
-    async fn type_text(&mut self, selector: &str, value: &str) -> anyhow::Result<InteractionResult>;
+    async fn type_text(&mut self, selector: &str, value: &str)
+    -> anyhow::Result<InteractionResult>;
 
     /// Type text into a form field by its numeric element ID.
     async fn type_by_id(&mut self, id: usize, value: &str) -> anyhow::Result<InteractionResult>;
@@ -76,7 +77,8 @@ pub trait Interactor: Send + Sync {
     fn upload(&mut self, selector: &str, paths: Vec<PathBuf>) -> anyhow::Result<InteractionResult>;
 
     /// Upload files to a file input element by its element ID.
-    fn upload_by_id(&mut self, id: usize, paths: Vec<PathBuf>) -> anyhow::Result<InteractionResult>;
+    fn upload_by_id(&mut self, id: usize, paths: Vec<PathBuf>)
+    -> anyhow::Result<InteractionResult>;
 }
 
 /// Tab lifecycle management.

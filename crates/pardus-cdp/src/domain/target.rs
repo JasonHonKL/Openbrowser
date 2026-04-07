@@ -41,6 +41,7 @@ impl CdpDomainHandler for TargetDomain {
                     title: None,
                     js_enabled: false,
                     frame_tree_json: None,
+                    form_state: std::collections::HashMap::new(),
                 });
 
                 let _ = ctx.event_bus.send(CdpEvent {

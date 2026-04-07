@@ -1,7 +1,7 @@
 //! HTTP/2 connection pool management
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
+
 use parking_lot::RwLock;
 use tracing::trace;
 
@@ -45,10 +45,7 @@ impl ConnectionPool {
     }
 
     /// Get or create connection to origin
-    pub async fn get_connection(
-        &self,
-        origin: &str,
-    ) -> anyhow::Result<ConnectionHandle> {
+    pub async fn get_connection(&self, origin: &str) -> anyhow::Result<ConnectionHandle> {
         self.cleanup();
 
         // Try to get existing idle connection
@@ -83,10 +80,7 @@ impl ConnectionPool {
     }
 
     /// Create new connection
-    async fn create_connection(
-        &self,
-        origin: &str,
-    ) -> anyhow::Result<ConnectionHandle> {
+    async fn create_connection(&self, origin: &str) -> anyhow::Result<ConnectionHandle> {
         trace!("creating new connection to {}", origin);
 
         // Parse origin for connection
@@ -108,9 +102,7 @@ impl ConnectionPool {
 
         {
             let mut conns = self.connections.write();
-            conns.entry(origin.to_string())
-                .or_default()
-                .push(conn);
+            conns.entry(origin.to_string()).or_default().push(conn);
         }
 
         Ok(ConnectionHandle {
@@ -120,9 +112,7 @@ impl ConnectionPool {
     }
 
     /// Release connection back to pool
-    pub fn release_connection(&self,
-        handle: ConnectionHandle,
-    ) {
+    pub fn release_connection(&self, handle: ConnectionHandle) {
         let mut conns = self.connections.write();
         if let Some(origin_conns) = conns.get_mut(&handle.origin) {
             if let Some(conn) = origin_conns.iter_mut().find(|c| c.id == handle.id) {
@@ -154,7 +144,8 @@ impl ConnectionPool {
     pub fn stats(&self) -> PoolStats {
         let conns = self.connections.read();
         let total = conns.values().map(|v| v.len()).sum();
-        let idle = conns.values()
+        let idle = conns
+            .values()
             .flat_map(|v| v.iter())
             .filter(|c| c.is_idle())
             .count();
@@ -181,9 +172,7 @@ struct PooledConnection {
 }
 
 impl PooledConnection {
-    fn is_idle(&self) -> bool {
-        self.requests_in_flight == 0
-    }
+    fn is_idle(&self) -> bool { self.requests_in_flight == 0 }
 
     fn mark_used(&mut self) {
         self.last_used = std::time::Instant::now();
@@ -228,7 +217,9 @@ impl H2Connection {
 
     /// Get next available stream ID
     pub fn next_stream_id(&self) -> Option<usize> {
-        let id = self.stream_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let id = self
+            .stream_counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if id < self.max_concurrent_streams {
             Some(id)
         } else {
@@ -238,6 +229,7 @@ impl H2Connection {
 
     /// Current stream count
     pub fn stream_count(&self) -> usize {
-        self.stream_counter.load(std::sync::atomic::Ordering::SeqCst)
+        self.stream_counter
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }

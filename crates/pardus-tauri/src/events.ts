@@ -3,19 +3,30 @@ import type { LogEntry } from "./types";
 
 type LogCallback = (entry: LogEntry) => void;
 
+interface ChallengeDetectedPayload {
+  url: string;
+  kinds: string[];
+  risk_score: number;
+}
+
+interface BrowserUrlChangedPayload {
+  instance_id: string;
+  url: string;
+}
+
 export function onChallengeDetected(
-  callback: (info: { url: string; kinds: string[]; risk_score: number }) => void
+  callback: (info: ChallengeDetectedPayload) => void
 ): Promise<UnlistenFn> {
-  return listen("challenge-detected", (event) => {
-    callback(event.payload as any);
+  return listen<ChallengeDetectedPayload>("challenge-detected", (event) => {
+    callback(event.payload);
   });
 }
 
 export function onChallengeSolved(
   callback: (info: { url: string }) => void
 ): Promise<UnlistenFn> {
-  return listen("challenge-solved", (event) => {
-    callback(event.payload as any);
+  return listen<{ url: string }>("challenge-solved", (event) => {
+    callback(event.payload);
   });
 }
 
@@ -31,10 +42,10 @@ export function onChallengeFailed(
 }
 
 export function onBrowserUrlChanged(
-  callback: (data: { instance_id: string; url: string }) => void
+  callback: (data: BrowserUrlChangedPayload) => void
 ): Promise<UnlistenFn> {
-  return listen("browser-url-changed", (event) => {
-    callback(event.payload as any);
+  return listen<BrowserUrlChangedPayload>("browser-url-changed", (event) => {
+    callback(event.payload);
   });
 }
 

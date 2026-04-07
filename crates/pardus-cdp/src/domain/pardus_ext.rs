@@ -55,7 +55,7 @@ impl CdpDomainHandler for PardusDomain {
                             pardus_core::Page::from_html(&html_str, &url)
                         };
                         let tree = page.semantic_tree();
-                        let result = serde_json::to_value(&tree).unwrap_or(serde_json::json!({
+                        let result = serde_json::to_value(&*tree).unwrap_or(serde_json::json!({
                             "error": "Failed to serialize semantic tree"
                         }));
                         HandleResult::Success(serde_json::json!({
@@ -77,12 +77,40 @@ impl CdpDomainHandler for PardusDomain {
                 let selector = params["selector"].as_str().unwrap_or("").to_string();
                 let value = params["value"].as_str().unwrap_or("").to_string();
                 let fields_param = params.get("fields").cloned();
+                let href = params.get("href").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
                 let result = if !action.is_empty() {
                     let session_id = session.session_id.clone();
                     emit_action_started(ctx, &action, &selector, &value, &session_id);
 
                     let res = handle_interact(&action, &selector, &value, target_id, &fields_param, ctx).await;
+
+                    // Fallback: if click failed but we have an href, navigate directly
+                    let res = if res["success"].as_bool() == Some(false) && !href.is_empty() {
+                        match ctx.navigate(target_id, &href).await {
+                            Ok(()) => {
+                                let new_url = ctx.get_url(target_id).await.unwrap_or_else(|| href.clone());
+
+                                // Emit Page.frameNavigated so CDP bridge/frontend sync
+                                ctx.event_bus.send(crate::protocol::message::CdpEvent {
+                                    method: "Page.frameNavigated".to_string(),
+                                    params: serde_json::json!({
+                                        "frame": {
+                                            "id": target_id,
+                                            "url": new_url,
+                                            "mimeType": "text/html",
+                                        }
+                                    }),
+                                    session_id: Some(session_id.clone()),
+                                });
+
+                                serde_json::json!({ "success": true, "action": "click", "selector": selector, "navigated": true, "url": new_url, "fallback": "href" })
+                            }
+                            Err(e) => serde_json::json!({ "success": false, "error": format!("href fallback navigation failed: {}", e), "selector": selector })
+                        }
+                    } else {
+                        res
+                    };
 
                     emit_action_completed(ctx, &action, &selector, &res, &session_id);
                     res
@@ -307,61 +335,171 @@ async fn handle_interact(
     fields_param: &Option<Value>,
     ctx: &DomainContext,
 ) -> Value {
+    // Resolve selector: if it looks like #N (element_id from semantic tree),
+    // use find_by_element_id. Otherwise treat as CSS selector.
+    let page_data = match get_page_data(ctx, target_id).await {
+        Some(d) => d,
+        None => return serde_json::json!({ "success": false, "error": "No active page" }),
+    };
+    let (html_str, url) = &page_data;
+    let page = pardus_core::Page::from_html(html_str, url);
+
+    // Try element_id lookup first when selector is "#N"
+    let handle = if let Some(num) = selector.strip_prefix('#') {
+        if let Ok(id) = num.parse::<usize>() {
+            page.find_by_element_id(id)
+        } else {
+            page.query(selector)
+        }
+    } else {
+        page.query(selector)
+    };
+
     match action {
         "click" => {
-            let page_data = get_page_data(ctx, target_id).await;
-            let href = page_data.as_ref().and_then(|(html_str, url)| {
-                let page = pardus_core::Page::from_html(&html_str, &url);
-                page.query(selector).and_then(|el| el.href.clone())
-            });
+            let Some(h) = handle else {
+                return serde_json::json!({ "success": false, "error": format!("Element {} not found", selector) });
+            };
 
-            if let Some(href) = href {
-                match ctx.navigate(target_id, &href).await {
-                    Ok(()) => serde_json::json!({ "success": true, "action": "click", "selector": selector }),
-                    Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
+            // Build form state from accumulated typed values + any provided fields
+            let mut form_state = pardus_core::interact::FormState::new();
+            {
+                let targets = ctx.targets.lock().await;
+                if let Some(entry) = targets.get(target_id) {
+                    for (name, val) in &entry.form_state {
+                        form_state.set(name, val);
+                    }
                 }
-            } else if let Some((html_str, url)) = page_data {
-                let page = pardus_core::Page::from_html(&html_str, &url);
-                let exists = page.query(selector).is_some();
-                if exists {
-                    serde_json::json!({ "success": true, "action": "click", "selector": selector, "note": "Element exists but is not a link" })
-                } else {
-                    serde_json::json!({ "success": false, "error": "Element not found" })
-                }
-            } else {
-                serde_json::json!({ "success": false, "error": "No active page" })
+            }
+            merge_fields_into_form_state(&mut form_state, fields_param);
+
+            match pardus_core::interact::actions::click(&ctx.app, &page, &h, &form_state).await {
+                Ok(result) => match result {
+                    pardus_core::interact::InteractionResult::Navigated(new_page) => {
+                        update_target_from_page(ctx, target_id, &new_page).await;
+                        serde_json::json!({ "success": true, "action": "click", "selector": selector, "navigated": true, "url": new_page.url })
+                    }
+                    pardus_core::interact::InteractionResult::ElementNotFound { selector: sel, reason } => {
+                        serde_json::json!({ "success": false, "error": reason, "selector": sel })
+                    }
+                    _ => {
+                        serde_json::json!({ "success": true, "action": "click", "selector": selector })
+                    }
+                },
+                Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
             }
         }
         "type" => {
-            match get_page_data(ctx, target_id).await {
-                Some((html_str, url)) => {
-                    let page = pardus_core::Page::from_html(&html_str, &url);
-                    match page.query(selector) {
-                        Some(handle) => {
-                            match pardus_core::interact::actions::type_text(&page, &handle, value) {
-                                Ok(_) => serde_json::json!({ "success": true, "action": "type", "selector": selector }),
-                                Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
-                            }
-                        }
-                        None => serde_json::json!({ "success": false, "error": "Element not found" }),
-                    }
+            let Some(h) = handle else {
+                return serde_json::json!({ "success": false, "error": format!("Element {} not found", selector) });
+            };
+
+            // Store the typed value in the target's form state so it can be
+            // used when the form is later submitted via click or submit.
+            if let Some(name) = &h.name {
+                let mut targets = ctx.targets.lock().await;
+                if let Some(entry) = targets.get_mut(target_id) {
+                    entry.form_state.insert(name.clone(), value.to_string());
                 }
-                None => serde_json::json!({ "success": false, "error": "No active page" }),
             }
+
+            serde_json::json!({ "success": true, "action": "type", "selector": selector, "value": value })
         }
         "submit" => {
-            let form_found = get_page_data(ctx, target_id).await
-                .map(|(html_str, url)| {
-                    let page = pardus_core::Page::from_html(&html_str, &url);
-                    page.query(selector).is_some()
-                })
-                .unwrap_or(false);
+            // Build form state from accumulated typed values + provided fields
+            let mut form_state = pardus_core::interact::FormState::new();
+            {
+                let targets = ctx.targets.lock().await;
+                if let Some(entry) = targets.get(target_id) {
+                    for (name, val) in &entry.form_state {
+                        form_state.set(name, val);
+                    }
+                }
+            }
+            merge_fields_into_form_state(&mut form_state, fields_param);
 
-            if form_found {
-                let _ = fields_param;
-                serde_json::json!({ "success": true, "action": "submit", "selector": selector, "note": "Form element found" })
+            // The selector should target a <form> element directly, or we try to
+            // find a form associated with the selected element.
+            let form_selector = if handle.is_some() {
+                // Check if the selected element is a form itself or inside a form
+                let h = handle.as_ref().unwrap();
+                if h.tag == "form" {
+                    selector.to_string()
+                } else {
+                    // Try to find enclosing form via the element's CSS selector
+                    find_enclosing_form(&page, &h.selector).unwrap_or_else(|| selector.to_string())
+                }
             } else {
-                serde_json::json!({ "success": false, "error": "Form not found" })
+                // Fallback: try the selector as a form selector
+                selector.to_string()
+            };
+
+            match pardus_core::interact::form::submit_form(&ctx.app, &page, &form_selector, &form_state).await {
+                Ok(result) => match result {
+                    pardus_core::interact::InteractionResult::Navigated(new_page) => {
+                        update_target_from_page(ctx, target_id, &new_page).await;
+                        serde_json::json!({ "success": true, "action": "submit", "selector": selector, "navigated": true, "url": new_page.url })
+                    }
+                    pardus_core::interact::InteractionResult::ElementNotFound { selector: sel, reason } => {
+                        serde_json::json!({ "success": false, "error": reason, "selector": sel })
+                    }
+                    _ => {
+                        serde_json::json!({ "success": true, "action": "submit", "selector": selector })
+                    }
+                },
+                Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
+            }
+        }
+        "scroll" => {
+            // Scroll is handled client-side; just acknowledge
+            serde_json::json!({ "success": true, "action": "scroll" })
+        }
+        "toggle" => {
+            let Some(h) = handle else {
+                return serde_json::json!({ "success": false, "error": format!("Element {} not found", selector) });
+            };
+            match pardus_core::interact::actions::toggle(&page, &h) {
+                Ok(pardus_core::interact::InteractionResult::Toggled { checked, .. }) => {
+                    // Record toggle state in form_state
+                    if let Some(name) = &h.name {
+                        let toggle_val = h.value.as_deref().unwrap_or("on");
+                        let mut targets = ctx.targets.lock().await;
+                        if let Some(entry) = targets.get_mut(target_id) {
+                            if checked {
+                                entry.form_state.insert(name.clone(), toggle_val.to_string());
+                            } else {
+                                entry.form_state.remove(name);
+                            }
+                        }
+                    }
+                    serde_json::json!({ "success": true, "action": "toggle", "selector": selector, "checked": checked })
+                }
+                Ok(pardus_core::interact::InteractionResult::ElementNotFound { reason, .. }) => {
+                    serde_json::json!({ "success": false, "error": reason })
+                }
+                Ok(other) => serde_json::json!({ "success": true, "action": "toggle", "selector": selector, "note": format!("{:?}", other) }),
+                Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
+            }
+        }
+        "select" => {
+            let Some(h) = handle else {
+                return serde_json::json!({ "success": false, "error": format!("Element {} not found", selector) });
+            };
+            match pardus_core::interact::actions::select_option(&page, &h, value) {
+                Ok(pardus_core::interact::InteractionResult::Selected { value: selected_val, .. }) => {
+                    if let Some(name) = &h.name {
+                        let mut targets = ctx.targets.lock().await;
+                        if let Some(entry) = targets.get_mut(target_id) {
+                            entry.form_state.insert(name.clone(), selected_val.clone());
+                        }
+                    }
+                    serde_json::json!({ "success": true, "action": "select", "selector": selector, "value": selected_val })
+                }
+                Ok(pardus_core::interact::InteractionResult::ElementNotFound { reason, .. }) => {
+                    serde_json::json!({ "success": false, "error": reason })
+                }
+                Ok(other) => serde_json::json!({ "success": true, "action": "select", "selector": selector, "note": format!("{:?}", other) }),
+                Err(e) => serde_json::json!({ "success": false, "error": e.to_string() }),
             }
         }
         _ => serde_json::json!({
@@ -369,6 +507,62 @@ async fn handle_interact(
             "error": format!("Unknown action '{}'", action)
         }),
     }
+}
+
+/// Update target store after a successful page navigation or form submission.
+async fn update_target_from_page(ctx: &DomainContext, target_id: &str, new_page: &pardus_core::Page) {
+    let html_str = new_page.html.html().to_string();
+    let url = new_page.url.clone();
+    let title = new_page.title();
+    let frame_tree_json = new_page.frame_tree.as_ref()
+        .and_then(|ft| serde_json::to_string(ft).ok());
+
+    let mut targets = ctx.targets.lock().await;
+    if let Some(entry) = targets.get_mut(target_id) {
+        entry.url = url;
+        entry.html = Some(html_str);
+        entry.title = title;
+        entry.frame_tree_json = frame_tree_json;
+        entry.form_state.clear();
+    }
+}
+
+/// Merge fields from a JSON object into a FormState.
+fn merge_fields_into_form_state(form_state: &mut pardus_core::interact::FormState, fields_param: &Option<Value>) {
+    if let Some(fields) = fields_param {
+        if let Some(obj) = fields.as_object() {
+            for (key, val) in obj {
+                if let Some(v) = val.as_str() {
+                    form_state.set(key, v);
+                }
+            }
+        }
+    }
+}
+
+/// Walk up the DOM from the element matching `element_selector` to find an
+/// enclosing `<form>`. Returns a CSS selector for the form.
+fn find_enclosing_form(page: &pardus_core::Page, element_selector: &str) -> Option<String> {
+    use scraper::{Selector, ElementRef};
+
+    let sel = Selector::parse(element_selector).ok()?;
+    let el = page.html.select(&sel).next()?;
+
+    let mut current = el.parent().and_then(ElementRef::wrap);
+    while let Some(parent) = current {
+        if parent.value().name() == "form" {
+            let form_sel = if let Some(id) = parent.value().attr("id") {
+                format!("#{}", id)
+            } else if let Some(action) = parent.value().attr("action") {
+                format!("form[action=\"{}\"]", action)
+            } else {
+                "form".to_string()
+            };
+            return Some(form_sel);
+        }
+        current = parent.parent().and_then(ElementRef::wrap);
+    }
+    None
 }
 
 fn collect_interactive_nodes(node: &pardus_core::SemanticNode, out: &mut Vec<Value>) {
@@ -425,4 +619,117 @@ fn emit_action_completed(ctx: &DomainContext, action: &str, selector: &str, resu
         }),
         session_id: Some(session_id.to_string()),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pardus_core::Page;
+
+    fn page_from(html: &str) -> Page {
+        Page::from_html(html, "https://example.com/page")
+    }
+
+    // -----------------------------------------------------------------------
+    // find_enclosing_form
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_enclosing_form_by_id() {
+        let html = r#"<html><body>
+            <form id="login-form" action="/login" method="POST">
+                <button type="submit" name="go">Login</button>
+            </form>
+        </body></html>"#;
+        let page = page_from(html);
+        let result = find_enclosing_form(&page, r#"button[name="go"]"#);
+        assert_eq!(result, Some("#login-form".to_string()));
+    }
+
+    #[test]
+    fn test_find_enclosing_form_by_action() {
+        let html = r#"<html><body>
+            <form action="/search">
+                <input type="text" name="q">
+                <button type="submit">Go</button>
+            </form>
+        </body></html>"#;
+        let page = page_from(html);
+        let result = find_enclosing_form(&page, r#"button[type="submit"]"#);
+        assert_eq!(result, Some(r#"form[action="/search"]"#.to_string()));
+    }
+
+    #[test]
+    fn test_find_enclosing_form_fallback() {
+        let html = r#"<html><body>
+            <form>
+                <input type="text" name="q">
+                <button type="submit">Go</button>
+            </form>
+        </body></html>"#;
+        let page = page_from(html);
+        let result = find_enclosing_form(&page, r#"button[type="submit"]"#);
+        assert_eq!(result, Some("form".to_string()));
+    }
+
+    #[test]
+    fn test_find_enclosing_form_no_parent() {
+        let html = r#"<html><body>
+            <button type="button">Standalone</button>
+        </body></html>"#;
+        let page = page_from(html);
+        let result = find_enclosing_form(&page, "button");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_find_enclosing_form_nested_deeply() {
+        let html = r#"<html><body>
+            <form id="deep-form">
+                <div>
+                    <div>
+                        <div>
+                            <input type="text" name="deep-input">
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </body></html>"#;
+        let page = page_from(html);
+        let result = find_enclosing_form(&page, r#"input[name="deep-input"]"#);
+        assert_eq!(result, Some("#deep-form".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_fields_into_form_state
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_merge_fields_into_form_state() {
+        let mut form_state = pardus_core::interact::FormState::new();
+        let fields = serde_json::json!({
+            "username": "alice",
+            "password": "secret123"
+        });
+        merge_fields_into_form_state(&mut form_state, &Some(fields));
+        assert_eq!(form_state.get("username"), Some("alice"));
+        assert_eq!(form_state.get("password"), Some("secret123"));
+    }
+
+    #[test]
+    fn test_merge_fields_does_not_override_when_none() {
+        let mut form_state = pardus_core::interact::FormState::new();
+        form_state.set("existing", "value");
+        merge_fields_into_form_state(&mut form_state, &None);
+        assert_eq!(form_state.get("existing"), Some("value"));
+    }
+
+    #[test]
+    fn test_merge_fields_overrides_existing() {
+        let mut form_state = pardus_core::interact::FormState::new();
+        form_state.set("username", "old");
+        let fields = serde_json::json!({ "username": "new" });
+        merge_fields_into_form_state(&mut form_state, &Some(fields));
+        assert_eq!(form_state.get("username"), Some("new"));
+    }
 }

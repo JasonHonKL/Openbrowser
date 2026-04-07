@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
-use axum::extract::Request;
-use axum::response::IntoResponse;
-use axum::routing::{delete, get, post};
-use axum::Router;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
+use axum::{
+    Router,
+    extract::Request,
+    response::IntoResponse,
+    routing::{delete, get, post},
+};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::handlers::*;
-use crate::state::ServerState;
-use crate::static_files;
+use crate::{handlers::*, state::ServerState, static_files};
 
 /// Build the axum router with all API routes and static file serving.
 pub fn build_router(state: Arc<ServerState>, dev_mode: bool) -> Router {
@@ -49,7 +48,14 @@ pub fn build_router(state: Arc<ServerState>, dev_mode: bool) -> Router {
         .route("/ws", get(crate::ws::ws_handler))
         .with_state(state);
 
-    let cors = CorsLayer::permissive();
+    let cors = CorsLayer::permissive()
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::DELETE,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers(tower_http::cors::Any);
 
     if dev_mode {
         Router::new()

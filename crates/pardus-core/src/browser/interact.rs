@@ -2,10 +2,8 @@
 
 use std::path::PathBuf;
 
-use crate::interact::actions::InteractionResult;
-use crate::interact::{FormState, ScrollDirection};
-
 use super::Browser;
+use crate::interact::{FormState, ScrollDirection, actions::InteractionResult};
 
 impl Browser {
     /// Click an element. If JS is enabled, dispatches click event in V8 DOM first.
@@ -21,9 +19,9 @@ impl Browser {
         }
 
         let page = self.require_active_page()?;
-        let handle = page.query(selector).ok_or_else(|| {
-            anyhow::anyhow!("Element not found: {}", selector)
-        })?;
+        let handle = page
+            .query(selector)
+            .ok_or_else(|| anyhow::anyhow!("Element not found: {}", selector))?;
         let app = self.temp_app();
         let result = crate::interact::actions::click(&app, page, &handle, &self.form_state).await?;
         drop(app);
@@ -34,9 +32,9 @@ impl Browser {
     /// This is the preferred way for AI agents to click elements.
     pub async fn click_by_id(&mut self, id: usize) -> anyhow::Result<InteractionResult> {
         let page = self.require_active_page()?;
-        let handle = page.find_by_element_id(id).ok_or_else(|| {
-            anyhow::anyhow!("Element with ID {} not found", id)
-        })?;
+        let handle = page
+            .find_by_element_id(id)
+            .ok_or_else(|| anyhow::anyhow!("Element with ID {} not found", id))?;
 
         #[cfg(feature = "js")]
         if self.is_js_enabled() {
@@ -55,7 +53,11 @@ impl Browser {
 
     /// Type text into a form field.
     /// If JS is enabled, dispatches input/change events in V8 DOM.
-    pub async fn type_text(&mut self, selector: &str, value: &str) -> anyhow::Result<InteractionResult> {
+    pub async fn type_text(
+        &mut self,
+        selector: &str,
+        value: &str,
+    ) -> anyhow::Result<InteractionResult> {
         #[cfg(feature = "js")]
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
@@ -64,9 +66,9 @@ impl Browser {
         }
 
         let page = self.require_active_page()?;
-        let handle = page.query(selector).ok_or_else(|| {
-            anyhow::anyhow!("Element not found: {}", selector)
-        })?;
+        let handle = page
+            .query(selector)
+            .ok_or_else(|| anyhow::anyhow!("Element not found: {}", selector))?;
         let (result, field_name) = {
             let name = handle.name.clone();
             let result = crate::interact::actions::type_text(page, &handle, value)?;
@@ -80,13 +82,17 @@ impl Browser {
 
     /// Type text into a form field by its element ID (shown in semantic tree as [#1], [#2], etc.)
     /// This is the preferred way for AI agents to fill form fields.
-    pub async fn type_by_id(&mut self, id: usize, value: &str) -> anyhow::Result<InteractionResult> {
+    pub async fn type_by_id(
+        &mut self,
+        id: usize,
+        value: &str,
+    ) -> anyhow::Result<InteractionResult> {
         #[cfg(feature = "js")]
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
-            let handle = page.find_by_element_id(id).ok_or_else(|| {
-                anyhow::anyhow!("Element with ID {} not found", id)
-            })?;
+            let handle = page
+                .find_by_element_id(id)
+                .ok_or_else(|| anyhow::anyhow!("Element with ID {} not found", id))?;
             let name = handle.name.clone();
             let selector = handle.selector.clone();
             let result = crate::interact::js_interact::js_type(page, &selector, value).await?;
@@ -97,9 +103,9 @@ impl Browser {
         }
 
         let page = self.require_active_page()?;
-        let handle = page.find_by_element_id(id).ok_or_else(|| {
-            anyhow::anyhow!("Element with ID {} not found", id)
-        })?;
+        let handle = page
+            .find_by_element_id(id)
+            .ok_or_else(|| anyhow::anyhow!("Element with ID {} not found", id))?;
         let (result, field_name) = {
             let name = handle.name.clone();
             let result = crate::interact::actions::type_text(page, &handle, value)?;
@@ -122,7 +128,8 @@ impl Browser {
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
             let app = self.temp_app();
-            let result = crate::interact::js_interact::js_submit(&app, page, form_selector, state).await?;
+            let result =
+                crate::interact::js_interact::js_submit(&app, page, form_selector, state).await?;
             drop(app);
             return self.apply_navigated_result(result);
         }
@@ -142,16 +149,18 @@ impl Browser {
     ) -> anyhow::Result<InteractionResult> {
         let page = self.require_active_page()?;
         let app = self.temp_app();
-        let result = crate::interact::wait::wait_for_selector(
-            &app, page, selector, timeout_ms, 500,
-        ).await?;
+        let result =
+            crate::interact::wait::wait_for_selector(&app, page, selector, timeout_ms, 500).await?;
         drop(app);
         Ok(result)
     }
 
     /// Scroll. If JS is enabled, dispatches scroll/wheel events in V8 DOM.
     /// Otherwise uses URL-based pagination detection.
-    pub async fn scroll(&mut self, direction: ScrollDirection) -> anyhow::Result<InteractionResult> {
+    pub async fn scroll(
+        &mut self,
+        direction: ScrollDirection,
+    ) -> anyhow::Result<InteractionResult> {
         #[cfg(feature = "js")]
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
@@ -169,9 +178,9 @@ impl Browser {
     /// Toggle a checkbox or radio.
     pub fn toggle(&mut self, selector: &str) -> anyhow::Result<InteractionResult> {
         let page = self.require_active_page()?;
-        let handle = page.query(selector).ok_or_else(|| {
-            anyhow::anyhow!("Element not found: {}", selector)
-        })?;
+        let handle = page
+            .query(selector)
+            .ok_or_else(|| anyhow::anyhow!("Element not found: {}", selector))?;
         let result = crate::interact::actions::toggle(page, &handle)?;
         if let Some(ref name) = handle.name {
             let value = handle.value.as_deref().unwrap_or("on");
@@ -183,11 +192,15 @@ impl Browser {
     }
 
     /// Select an option in a `<select>` element.
-    pub fn select_option(&mut self, selector: &str, value: &str) -> anyhow::Result<InteractionResult> {
+    pub fn select_option(
+        &mut self,
+        selector: &str,
+        value: &str,
+    ) -> anyhow::Result<InteractionResult> {
         let page = self.require_active_page()?;
-        let handle = page.query(selector).ok_or_else(|| {
-            anyhow::anyhow!("Element not found: {}", selector)
-        })?;
+        let handle = page
+            .query(selector)
+            .ok_or_else(|| anyhow::anyhow!("Element not found: {}", selector))?;
         let result = crate::interact::actions::select_option(page, &handle, value)?;
         if let Some(ref name) = handle.name {
             self.form_state.set(name, value);
@@ -211,14 +224,15 @@ impl Browser {
             let page = self.require_active_page()?;
             let result = crate::interact::js_interact::js_dispatch_event(
                 page, selector, event_type, event_init,
-            ).await?;
+            )
+            .await?;
             return self.apply_navigated_result(result);
         }
 
         let page = self.require_active_page()?;
-        let handle = page.query(selector).ok_or_else(|| {
-            anyhow::anyhow!("Element not found: {}", selector)
-        })?;
+        let handle = page
+            .query(selector)
+            .ok_or_else(|| anyhow::anyhow!("Element not found: {}", selector))?;
         crate::interact::actions::dispatch_event(page, &handle, event_type)
     }
 
@@ -232,20 +246,21 @@ impl Browser {
         #[cfg(feature = "js")]
         if self.is_js_enabled() {
             let page = self.require_active_page()?;
-            let handle = page.find_by_element_id(id).ok_or_else(|| {
-                anyhow::anyhow!("Element with ID {} not found", id)
-            })?;
+            let handle = page
+                .find_by_element_id(id)
+                .ok_or_else(|| anyhow::anyhow!("Element with ID {} not found", id))?;
             let selector = handle.selector.clone();
             let result = crate::interact::js_interact::js_dispatch_event(
                 page, &selector, event_type, event_init,
-            ).await?;
+            )
+            .await?;
             return self.apply_navigated_result(result);
         }
 
         let page = self.require_active_page()?;
-        let handle = page.find_by_element_id(id).ok_or_else(|| {
-            anyhow::anyhow!("Element with ID {} not found", id)
-        })?;
+        let handle = page
+            .find_by_element_id(id)
+            .ok_or_else(|| anyhow::anyhow!("Element with ID {} not found", id))?;
         crate::interact::actions::dispatch_event(page, &handle, event_type)
     }
 
@@ -253,15 +268,19 @@ impl Browser {
     ///
     /// Files are read eagerly and stored in form state. When the form is
     /// submitted, the request will use `multipart/form-data` encoding.
-    pub fn upload(&mut self, selector: &str, paths: Vec<PathBuf>) -> anyhow::Result<InteractionResult> {
+    pub fn upload(
+        &mut self,
+        selector: &str,
+        paths: Vec<PathBuf>,
+    ) -> anyhow::Result<InteractionResult> {
         if !self.config.sandbox.is_off() {
             anyhow::bail!("file uploads are blocked in sandbox mode");
         }
 
         let page = self.require_active_page()?;
-        let handle = page.query(selector).ok_or_else(|| {
-            anyhow::anyhow!("Element not found: {}", selector)
-        })?;
+        let handle = page
+            .query(selector)
+            .ok_or_else(|| anyhow::anyhow!("Element not found: {}", selector))?;
 
         let max_size = self.config.max_upload_size;
         let files = crate::interact::upload::upload_files(page, &handle, &paths, max_size)?;
@@ -278,15 +297,19 @@ impl Browser {
     }
 
     /// Upload files to a file input element by its element ID.
-    pub fn upload_by_id(&mut self, id: usize, paths: Vec<PathBuf>) -> anyhow::Result<InteractionResult> {
+    pub fn upload_by_id(
+        &mut self,
+        id: usize,
+        paths: Vec<PathBuf>,
+    ) -> anyhow::Result<InteractionResult> {
         if !self.config.sandbox.is_off() {
             anyhow::bail!("file uploads are blocked in sandbox mode");
         }
 
         let page = self.require_active_page()?;
-        let handle = page.find_by_element_id(id).ok_or_else(|| {
-            anyhow::anyhow!("Element with ID {} not found", id)
-        })?;
+        let handle = page
+            .find_by_element_id(id)
+            .ok_or_else(|| anyhow::anyhow!("Element with ID {} not found", id))?;
 
         let max_size = self.config.max_upload_size;
         let files = crate::interact::upload::upload_files(page, &handle, &paths, max_size)?;

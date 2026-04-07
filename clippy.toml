@@ -1,0 +1,15 @@
+# Warn on all pedantic lints except those that are too noisy
+warn-on-all-wildcard-imports = true
+
+# MSRV — we use nightly, but document the effective minimum
+msrv = "1.85.0"
+
+# Categorize common lints
+[cognitive-complexity]
+threshold = 25
+
+[too-many-arguments]
+threshold = 8
+
+[type-complexity]
+threshold = 300

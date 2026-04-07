@@ -139,9 +139,42 @@ export function compactMessages(
     // Drop from the summarized section until we fit
     let dropFrom = 1; // start after system message
     while (dropFrom < result.length - cfg.keepRecentMessages && finalTokens > cfg.maxTokens) {
-      const dropped = result.splice(dropFrom, 1)[0];
+      const dropped = result[dropFrom];
+
+      if (dropped.role === 'assistant' && dropped.tool_calls && dropped.tool_calls.length > 0) {
+        const toolCallCount = dropped.tool_calls.length;
+        const removed = result.splice(dropFrom, 1 + toolCallCount);
+        let removedTokens = 0;
+        for (const msg of removed) {
+          removedTokens += estimateTokens(
+            (msg.content ?? '') + (msg.tool_calls?.map(tc => tc.function.arguments).join('') ?? ''),
+            cfg.charsPerToken
+          );
+        }
+        finalTokens -= removedTokens;
+        continue;
+      }
+
+      if (dropped.role === 'tool' && dropFrom > 1) {
+        const prev = result[dropFrom - 1];
+        if (prev.role === 'assistant' && prev.tool_calls && prev.tool_calls.length > 0) {
+          const toolCallCount = prev.tool_calls.length;
+          const removed = result.splice(dropFrom - 1, 1 + toolCallCount);
+          let removedTokens = 0;
+          for (const msg of removed) {
+            removedTokens += estimateTokens(
+              (msg.content ?? '') + (msg.tool_calls?.map(tc => tc.function.arguments).join('') ?? ''),
+              cfg.charsPerToken
+            );
+          }
+          finalTokens -= removedTokens;
+          continue;
+        }
+      }
+
+      const removed = result.splice(dropFrom, 1);
       finalTokens -= estimateTokens(
-        (dropped.content ?? '') + (dropped.tool_calls?.map(tc => tc.function.arguments).join('') ?? ''),
+        (removed[0].content ?? '') + (removed[0].tool_calls?.map(tc => tc.function.arguments).join('') ?? ''),
         cfg.charsPerToken
       );
     }

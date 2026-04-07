@@ -1,4 +1,5 @@
 use scraper::Selector;
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
@@ -337,7 +338,7 @@ async fn submit_post_urlencoded(
         base_url,
         csp: None,
         frame_tree: None,
-        cached_tree: None,
+        cached_tree: OnceCell::new(),
         redirect_chain: None,
     })
 }
@@ -418,7 +419,7 @@ async fn submit_post_multipart(
         base_url,
         csp: None,
         frame_tree: None,
-        cached_tree: None,
+        cached_tree: OnceCell::new(),
         redirect_chain: None,
     })
 }

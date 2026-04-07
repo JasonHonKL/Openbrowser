@@ -1,5 +1,5 @@
 import { BrowserManager, BrowserInstance } from '../core/index.js';
-import { ToolResult } from '../core/types.js';
+import type { ToolResult } from '../core/types.js';
 import { BrowserToolName } from './definitions.js';
 import {
   ToolExecutionConfig,
@@ -52,6 +52,17 @@ interface ToolCallArgs {
   // Feed args
   // Network args
   resource_types?: string[];
+  // OAuth args
+  provider?: string;
+  issuer?: string;
+  client_id?: string;
+  client_secret?: string;
+  authorization_endpoint?: string;
+  token_endpoint?: string;
+  redirect_uri?: string;
+  scopes?: string[];
+  extra_params?: Record<string, string>;
+  code?: string;
 }
 
 /**
@@ -68,6 +79,24 @@ const DEFAULT_RETRY_CONFIG: Required<ToolExecutionConfig> = {
 
 export class ToolExecutor {
   constructor(private browserManager: BrowserManager) {}
+
+  private getInstance(args: Record<string, unknown>): BrowserInstance | null {
+    const id = args.instance_id as string | undefined;
+    if (!id) return null;
+    return this.browserManager.getInstance(id) ?? null;
+  }
+
+  private resolveElementId(args: ToolCallArgs): string | undefined {
+    const id = args.element_id as string | undefined;
+    if (!id) return undefined;
+    return id.startsWith('#') ? id.slice(1) : id;
+  }
+
+  private resolveFormElementId(args: ToolCallArgs): string | undefined {
+    const id = args.form_element_id as string | undefined;
+    if (!id) return undefined;
+    return id.startsWith('#') ? id.slice(1) : id;
+  }
 
   /**
    * Execute a single browser tool call with retry logic and timeout
@@ -128,15 +157,15 @@ export class ToolExecutor {
     args: ToolCallArgs,
     timeout: number
   ): Promise<ToolResult> {
-    return Promise.race([
-      this.executeToolInternal(name, args),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`TimeoutError: Tool ${name} timed out after ${timeout}ms`)),
-          timeout
-        )
-      ),
-    ]);
+    return new Promise<ToolResult>((resolve, reject) => {
+      const timeoutId = setTimeout(
+        () => reject(new Error(`TimeoutError: Tool ${name} timed out after ${timeout}ms`)),
+        timeout
+      );
+      this.executeToolInternal(name, args)
+        .then(result => { clearTimeout(timeoutId); resolve(result); })
+        .catch(error => { clearTimeout(timeoutId); reject(error); });
+    });
   }
 
   /**
@@ -295,89 +324,95 @@ export class ToolExecutor {
     name: BrowserToolName,
     args: ToolCallArgs
   ): Promise<ToolResult> {
-    const typedArgs = args;
-
     switch (name) {
       case 'browser_new':
-        return this.handleNew(typedArgs);
+        return this.handleNew(args);
       case 'browser_navigate':
-        return this.handleNavigate(typedArgs);
+        return this.handleNavigate(args);
       case 'browser_click':
-        return this.handleClick(typedArgs);
+        return this.handleClick(args);
       case 'browser_fill':
-        return this.handleFill(typedArgs);
+        return this.handleFill(args);
       case 'browser_submit':
-        return this.handleSubmit(typedArgs);
+        return this.handleSubmit(args);
       case 'browser_scroll':
-        return this.handleScroll(typedArgs);
+        return this.handleScroll(args);
       case 'browser_get_cookies':
-        return this.handleGetCookies(typedArgs);
+        return this.handleGetCookies(args);
       case 'browser_set_cookie':
-        return this.handleSetCookie(typedArgs);
+        return this.handleSetCookie(args);
       case 'browser_delete_cookie':
-        return this.handleDeleteCookie(typedArgs);
+        return this.handleDeleteCookie(args);
       case 'browser_get_storage':
-        return this.handleGetStorage(typedArgs);
+        return this.handleGetStorage(args);
       case 'browser_set_storage':
-        return this.handleSetStorage(typedArgs);
+        return this.handleSetStorage(args);
       case 'browser_delete_storage':
-        return this.handleDeleteStorage(typedArgs);
+        return this.handleDeleteStorage(args);
       case 'browser_clear_storage':
-        return this.handleClearStorage(typedArgs);
+        return this.handleClearStorage(args);
       case 'browser_get_action_plan':
-        return this.handleGetActionPlan(typedArgs);
+        return this.handleGetActionPlan(args);
       case 'browser_auto_fill':
-        return this.handleAutoFill(typedArgs);
+        return this.handleAutoFill(args);
       case 'browser_wait':
-        return this.handleWait(typedArgs);
+        return this.handleWait(args);
       case 'browser_close':
-        return this.handleClose(typedArgs);
+        return this.handleClose(args);
       case 'browser_list':
         return this.handleList();
       case 'browser_get_state':
-        return this.handleGetState(typedArgs);
+        return this.handleGetState(args);
       case 'browser_extract_text':
-        return this.handleExtractText(typedArgs);
+        return this.handleExtractText(args);
       case 'browser_extract_links':
-        return this.handleExtractLinks(typedArgs);
+        return this.handleExtractLinks(args);
       case 'browser_find':
-        return this.handleFind(typedArgs);
+        return this.handleFind(args);
       case 'browser_extract_table':
-        return this.handleExtractTable(typedArgs);
+        return this.handleExtractTable(args);
       case 'browser_extract_metadata':
-        return this.handleExtractMetadata(typedArgs);
+        return this.handleExtractMetadata(args);
       case 'browser_screenshot':
-        return this.handleScreenshot(typedArgs);
+        return this.handleScreenshot(args);
       case 'browser_select':
-        return this.handleSelect(typedArgs);
+        return this.handleSelect(args);
       case 'browser_press_key':
-        return this.handlePressKey(typedArgs);
+        return this.handlePressKey(args);
       case 'browser_hover':
-        return this.handleHover(typedArgs);
+        return this.handleHover(args);
       case 'browser_tab_new':
-        return this.handleTabNew(typedArgs);
+        return this.handleTabNew(args);
       case 'browser_tab_switch':
-        return this.handleTabSwitch(typedArgs);
+        return this.handleTabSwitch(args);
       case 'browser_tab_close':
-        return this.handleTabClose(typedArgs);
+        return this.handleTabClose(args);
       case 'browser_download':
-        return this.handleDownload(typedArgs);
+        return this.handleDownload(args);
       case 'browser_upload':
-        return this.handleUpload(typedArgs);
+        return this.handleUpload(args);
       case 'browser_pdf_extract':
-        return this.handlePdfExtract(typedArgs);
+        return this.handlePdfExtract(args);
       case 'browser_feed_parse':
-        return this.handleFeedParse(typedArgs);
+        return this.handleFeedParse(args);
       case 'browser_network_block':
-        return this.handleNetworkBlock(typedArgs);
+        return this.handleNetworkBlock(args);
       case 'browser_network_log':
-        return this.handleNetworkLog(typedArgs);
+        return this.handleNetworkLog(args);
       case 'browser_iframe_enter':
-        return this.handleIframeEnter(typedArgs);
+        return this.handleIframeEnter(args);
       case 'browser_iframe_exit':
-        return this.handleIframeExit(typedArgs);
+        return this.handleIframeExit(args);
       case 'browser_diff':
-        return this.handleDiff(typedArgs);
+        return this.handleDiff(args);
+      case 'browser_oauth_set_provider':
+        return this.handleOAuthSetProvider(args);
+      case 'browser_oauth_start':
+        return this.handleOAuthStart(args);
+      case 'browser_oauth_complete':
+        return this.handleOAuthComplete(args);
+      case 'browser_oauth_status':
+        return this.handleOAuthStatus(args);
       default:
         return {
           success: false,
@@ -385,6 +420,17 @@ export class ToolExecutor {
           error: `Unknown tool: ${name}`,
         };
     }
+  }
+
+  private requireInstance(args: ToolCallArgs): { instance: BrowserInstance; error?: undefined } | { instance?: undefined; error: ToolResult } {
+    if (!args.instance_id) {
+      return { error: { success: false, content: '', error: 'Missing instance_id' } };
+    }
+    const instance = this.browserManager.getInstance(args.instance_id);
+    if (!instance) {
+      return { error: { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` } };
+    }
+    return { instance };
   }
 
   private async handleNew(args: ToolCallArgs): Promise<ToolResult> {
@@ -416,17 +462,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing url' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.navigate(args.url, {
+      const result = await inst.instance.navigate(args.url, {
         waitMs: args.wait_ms,
         interactiveOnly: args.interactive_only,
         headers: args.headers,
@@ -466,17 +506,13 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing element_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const elementId = this.resolveElementId(args);
+
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.click(args.element_id);
+      const result = await inst.instance.click(elementId!);
 
       if (!result.success) {
         return {
@@ -487,7 +523,7 @@ export class ToolExecutor {
       }
 
       let content = `## Click Result\n\n` +
-        `- **Element**: ${args.element_id}\n` +
+        `- **Element**: #${elementId}\n` +
         `- **Navigated**: ${result.navigated ? 'Yes' : 'No'}\n`;
 
       if (result.navigated && result.url) {
@@ -519,17 +555,13 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing value' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const elementId = this.resolveElementId(args);
+
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.fill(args.element_id, args.value);
+      const result = await inst.instance.fill(elementId!, args.value);
 
       if (!result.success) {
         return {
@@ -541,7 +573,7 @@ export class ToolExecutor {
 
       return {
         success: true,
-        content: `Filled ${args.element_id} with: ${args.value}`,
+        content: `Filled #${elementId} with: ${args.value}`,
       };
     } catch (error) {
       return {
@@ -557,17 +589,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.submit(args.form_element_id);
+      const result = await inst.instance.submit(this.resolveFormElementId(args));
 
       if (!result.success) {
         return {
@@ -606,17 +632,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing direction' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.scroll(args.direction);
+      const result = await inst.instance.scroll(args.direction);
 
       if (!result.success) {
         return {
@@ -648,17 +668,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.getCookies(args.url);
+      const result = await inst.instance.getCookies(args.url);
 
       if (!result.success) {
         return {
@@ -695,17 +709,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing cookie value' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.setCookie(args.name, args.value, {
+      const result = await inst.instance.setCookie(args.name, args.value, {
         url: args.url,
         domain: args.domain,
         path: args.path,
@@ -744,17 +752,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing cookie name' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.deleteCookie(args.name, args.url);
+      const result = await inst.instance.deleteCookie(args.name, args.url);
 
       if (!result.success) {
         return {
@@ -786,17 +788,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing storage_type' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.getStorage(args.storage_type as 'localStorage' | 'sessionStorage', args.key);
+      const result = await inst.instance.getStorage(args.storage_type as 'localStorage' | 'sessionStorage', args.key);
 
       if (!result.success) {
         return {
@@ -836,17 +832,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing value' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.setStorage(args.storage_type as 'localStorage' | 'sessionStorage', args.key, args.value);
+      const result = await inst.instance.setStorage(args.storage_type as 'localStorage' | 'sessionStorage', args.key, args.value);
 
       if (!result.success) {
         return {
@@ -880,17 +870,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing key' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.deleteStorage(args.storage_type as 'localStorage' | 'sessionStorage', args.key);
+      const result = await inst.instance.deleteStorage(args.storage_type as 'localStorage' | 'sessionStorage', args.key);
 
       if (!result.success) {
         return {
@@ -921,17 +905,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing storage_type' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.clearStorage(args.storage_type);
+      const result = await inst.instance.clearStorage(args.storage_type);
 
       if (!result.success) {
         return {
@@ -959,17 +937,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.getActionPlan();
+      const result = await inst.instance.getActionPlan();
 
       if (!result.success) {
         return {
@@ -1028,17 +1000,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing fields (array of {key, value} pairs)' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.autoFill(args.fields);
+      const result = await inst.instance.autoFill(args.fields);
 
       if (!result.success) {
         return {
@@ -1092,14 +1058,8 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing condition (contentLoaded, contentStable, networkIdle, minInteractive, or selector)' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
       const validConditions = ['contentLoaded', 'contentStable', 'networkIdle', 'minInteractive', 'selector'] as const;
@@ -1112,7 +1072,7 @@ export class ToolExecutor {
         return { success: false, content: '', error: 'selector is required when condition is "selector"' };
       }
 
-      const result = await instance.wait(condition, {
+      const result = await inst.instance.wait(condition, {
         selector: args.selector,
         minCount: args.min_count,
         timeoutMs: args.timeout_ms,
@@ -1191,17 +1151,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return {
-        success: false,
-        content: '',
-        error: `Browser instance "${args.instance_id}" not found`,
-      };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const state = await instance.getCurrentState();
+      const state = await inst.instance.getCurrentState();
       
       const content = `## Current State\n\n` +
         `- **URL**: ${state.url}\n` +
@@ -1227,13 +1181,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.extractText(args.selector);
+      const result = await inst.instance.extractText(args.selector);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Text extraction failed' };
@@ -1255,13 +1207,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.extractLinks(args.filter, args.domain);
+      const result = await inst.instance.extractLinks(args.filter, args.domain);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Link extraction failed' };
@@ -1290,13 +1240,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing query' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.find(args.query, args.case_sensitive);
+      const result = await inst.instance.find(args.query, args.case_sensitive);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Find failed' };
@@ -1323,13 +1271,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.extractTable(args.selector);
+      const result = await inst.instance.extractTable(args.selector);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Table extraction failed' };
@@ -1353,13 +1299,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.extractMetadata();
+      const result = await inst.instance.extractMetadata();
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Metadata extraction failed' };
@@ -1401,13 +1345,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing instance_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.screenshot();
+      const result = await inst.instance.screenshot();
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Screenshot failed' };
@@ -1437,13 +1379,13 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing value' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const elementId = this.resolveElementId(args);
+
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.selectOption(args.element_id, args.value);
+      const result = await inst.instance.selectOption(elementId!, args.value);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Select failed' };
@@ -1451,7 +1393,7 @@ export class ToolExecutor {
 
       return {
         success: true,
-        content: `Selected "${result.selected_value}" in dropdown ${args.element_id}`,
+        content: `Selected "${result.selected_value}" in dropdown #${elementId}`,
       };
     } catch (error) {
       return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
@@ -1466,13 +1408,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing key' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.pressKey(args.key);
+      const result = await inst.instance.pressKey(args.key);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Press key failed' };
@@ -1495,13 +1435,13 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing element_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const elementId = this.resolveElementId(args);
+
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.hover(args.element_id);
+      const result = await inst.instance.hover(elementId!);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Hover failed' };
@@ -1509,7 +1449,7 @@ export class ToolExecutor {
 
       return {
         success: true,
-        content: `Hovered over element ${args.element_id}`,
+        content: `Hovered over element #${elementId}`,
       };
     } catch (error) {
       return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
@@ -1526,13 +1466,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing url' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.newTab(args.url);
+      const result = await inst.instance.newTab(args.url);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Failed to create tab' };
@@ -1555,13 +1493,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing target_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.switchTab(args.target_id);
+      const result = await inst.instance.switchTab(args.target_id);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Failed to switch tab' };
@@ -1584,13 +1520,11 @@ export class ToolExecutor {
       return { success: false, content: '', error: 'Missing target_id' };
     }
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) {
-      return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
-    }
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.closeTab(args.target_id);
+      const result = await inst.instance.closeTab(args.target_id);
 
       if (!result.success) {
         return { success: false, content: '', error: result.error || 'Failed to close tab' };
@@ -1611,11 +1545,11 @@ export class ToolExecutor {
     if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
     if (!args.url) return { success: false, content: '', error: 'Missing url' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.download(args.url, args.filename);
+      const result = await inst.instance.download(args.url, args.filename);
       if (!result.success) return { success: false, content: '', error: result.error || 'Download failed' };
 
       const content = `## Download Complete\n\n` +
@@ -1635,14 +1569,16 @@ export class ToolExecutor {
     if (!args.element_id) return { success: false, content: '', error: 'Missing element_id' };
     if (!args.file_path) return { success: false, content: '', error: 'Missing file_path' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const elementId = this.resolveElementId(args);
+
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.upload(args.element_id, args.file_path);
+      const result = await inst.instance.upload(elementId!, args.file_path);
       if (!result.success) return { success: false, content: '', error: result.error || 'Upload failed' };
 
-      return { success: true, content: `Uploaded "${args.file_path}" to element ${args.element_id}` };
+      return { success: true, content: `Uploaded "${args.file_path}" to element #${elementId}` };
     } catch (error) {
       return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
     }
@@ -1654,11 +1590,11 @@ export class ToolExecutor {
     if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
     if (!args.url) return { success: false, content: '', error: 'Missing url' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.pdfExtract(args.url);
+      const result = await inst.instance.pdfExtract(args.url);
       if (!result.success) return { success: false, content: '', error: result.error || 'PDF extraction failed' };
 
       let content = `## PDF Extract\n\n` +
@@ -1682,11 +1618,11 @@ export class ToolExecutor {
     if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
     if (!args.url) return { success: false, content: '', error: 'Missing url' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.feedParse(args.url);
+      const result = await inst.instance.feedParse(args.url);
       if (!result.success) return { success: false, content: '', error: result.error || 'Feed parse failed' };
 
       let content = `## ${result.feed_type.toUpperCase()} Feed\n\n` +
@@ -1715,11 +1651,11 @@ export class ToolExecutor {
     if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
     if (!args.resource_types) return { success: false, content: '', error: 'Missing resource_types' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.networkBlock(args.resource_types);
+      const result = await inst.instance.networkBlock(args.resource_types);
       if (!result.success) return { success: false, content: '', error: result.error || 'Network block failed' };
 
       const content = args.resource_types.length === 0
@@ -1735,11 +1671,11 @@ export class ToolExecutor {
   private async handleNetworkLog(args: ToolCallArgs): Promise<ToolResult> {
     if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.networkLog(args.filter);
+      const result = await inst.instance.networkLog(args.filter);
       if (!result.success) return { success: false, content: '', error: result.error || 'Network log failed' };
 
       let content = `## Network Log (${result.count} requests)\n\n`;
@@ -1762,14 +1698,16 @@ export class ToolExecutor {
     if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
     if (!args.element_id) return { success: false, content: '', error: 'Missing element_id' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const elementId = this.resolveElementId(args);
+
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.iframeEnter(args.element_id);
+      const result = await inst.instance.iframeEnter(elementId!);
       if (!result.success) return { success: false, content: '', error: result.error || 'Failed to enter iframe' };
 
-      return { success: true, content: `Entered iframe ${args.element_id}. Subsequent commands now operate within the iframe.` };
+      return { success: true, content: `Entered iframe #${elementId}. Subsequent commands now operate within the iframe.` };
     } catch (error) {
       return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
     }
@@ -1778,11 +1716,11 @@ export class ToolExecutor {
   private async handleIframeExit(args: ToolCallArgs): Promise<ToolResult> {
     if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.iframeExit();
+      const result = await inst.instance.iframeExit();
       if (!result.success) return { success: false, content: '', error: result.error || 'Failed to exit iframe' };
 
       return { success: true, content: 'Returned to parent page context.' };
@@ -1796,11 +1734,11 @@ export class ToolExecutor {
   private async handleDiff(args: ToolCallArgs): Promise<ToolResult> {
     if (!args.instance_id) return { success: false, content: '', error: 'Missing instance_id' };
 
-    const instance = this.browserManager.getInstance(args.instance_id);
-    if (!instance) return { success: false, content: '', error: `Browser instance "${args.instance_id}" not found` };
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
 
     try {
-      const result = await instance.diff();
+      const result = await inst.instance.diff();
       if (!result.success) return { success: false, content: '', error: result.error || 'Diff failed' };
 
       let content = `## Page Diff (${result.change_count} changes)\n\n`;
@@ -1819,6 +1757,118 @@ export class ToolExecutor {
       }
 
       if (result.change_count > 30) content += `\n... and ${result.change_count - 30} more changes`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // OAuth 2.0 / OIDC handlers
+  // ---------------------------------------------------------------------------
+
+  private async handleOAuthSetProvider(args: ToolCallArgs): Promise<ToolResult> {
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
+
+    try {
+      const data = await inst.instance.sendCommand('OAuth.setProvider', {
+        name: args.provider || args.name,
+        client_id: args.client_id,
+        client_secret: args.client_secret,
+        issuer: args.issuer,
+        authorization_endpoint: args.authorization_endpoint,
+        token_endpoint: args.token_endpoint,
+        scopes: args.scopes,
+        redirect_uri: args.redirect_uri,
+      }) as Record<string, unknown>;
+
+      return {
+        success: true,
+        content: `OAuth provider "${data?.provider}" registered successfully.${data?.discovered ? ' Endpoints auto-discovered via OIDC.' : ''}`,
+      };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleOAuthStart(args: ToolCallArgs): Promise<ToolResult> {
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
+
+    try {
+      const navData = await inst.instance.sendCommand('OAuth.navigateForAuth', {
+        provider: args.provider,
+      }) as Record<string, unknown>;
+      const status = navData?.status as string;
+
+      if (status === 'callback_captured') {
+        return {
+          success: true,
+          content: `OAuth callback captured. Authorization code received. Call browser_oauth_complete to exchange for tokens.`,
+        };
+      }
+
+      return {
+        success: true,
+        content: `OAuth flow started. Landed on login/consent page at: ${navData?.url}.\n\nUse browser_fill and browser_submit to log in, then call browser_oauth_complete to finish the flow.`,
+      };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleOAuthComplete(args: ToolCallArgs): Promise<ToolResult> {
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
+
+    try {
+      const data = await inst.instance.sendCommand('OAuth.completeFlow', {
+        provider: args.provider,
+        code: args.code,
+      }) as Record<string, unknown>;
+
+      let content = `OAuth flow completed successfully.\n`;
+      content += `- Has refresh token: ${data?.hasRefreshToken ? 'yes' : 'no'}\n`;
+      if (data?.expiresAt) content += `- Expires at: ${new Date((data.expiresAt as number) * 1000).toISOString()}\n`;
+      if (data?.scopes) content += `- Scopes: ${(data.scopes as string[]).join(', ')}\n`;
+      if (data?.idTokenClaims) {
+        const claims = data.idTokenClaims as Record<string, unknown>;
+        content += `- User: ${claims.email || claims.sub}\n`;
+      }
+      content += `\nTokens will be automatically injected into future requests to this provider's domain.`;
+
+      return { success: true, content };
+    } catch (error) {
+      return { success: false, content: '', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private async handleOAuthStatus(args: ToolCallArgs): Promise<ToolResult> {
+    const inst = this.requireInstance(args);
+    if (inst.error) return inst.error;
+
+    try {
+      const data = await inst.instance.sendCommand('OAuth.listSessions', {}) as Record<string, unknown>;
+      const sessions = (data?.sessions || []) as Array<Record<string, unknown>>;
+
+      if (sessions.length === 0) {
+        return { success: true, content: 'No OAuth sessions registered. Use browser_oauth_set_provider to register one.' };
+      }
+
+      let content = `## OAuth Sessions (${sessions.length})\n\n`;
+      for (const session of sessions) {
+        const icon = session.status === 'active' ? '✓' : session.status === 'authorization_pending' ? '⏳' : '○';
+        content += `${icon} **${session.provider}** — ${session.status}\n`;
+        content += `  Access token: ${session.has_access_token ? 'yes' : 'no'} | Refresh token: ${session.has_refresh_token ? 'yes' : 'no'}\n`;
+        if (session.expires_at) {
+          const expired = (session.expires_at as number) * 1000 < Date.now();
+          content += `  Expires: ${new Date((session.expires_at as number) * 1000).toISOString()} ${expired ? '(EXPIRED)' : ''}\n`;
+        }
+        if (session.scopes) content += `  Scopes: ${session.scopes}\n`;
+        content += '\n';
+      }
 
       return { success: true, content };
     } catch (error) {

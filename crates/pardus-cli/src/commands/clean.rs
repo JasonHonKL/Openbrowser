@@ -1,11 +1,8 @@
-use anyhow::Result;
 use std::path::PathBuf;
 
-pub fn run(
-    cache_dir: Option<PathBuf>,
-    cookies_only: bool,
-    cache_only: bool,
-) -> Result<()> {
+use anyhow::Result;
+
+pub fn run(cache_dir: Option<PathBuf>, cookies_only: bool, cache_only: bool) -> Result<()> {
     let dir = cache_dir.unwrap_or_else(|| {
         dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))

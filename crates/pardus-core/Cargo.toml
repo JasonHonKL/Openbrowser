@@ -38,6 +38,7 @@ dashmap = { workspace = true }
 lru = "0.12"
 bumpalo = "3"
 fastrand = "2"
+getrandom = "0.3"
 dirs = "6"
 
 # Network debugging
@@ -56,6 +57,7 @@ blake3 = { workspace = true }
 
 # Streaming parser
 lol_html = { workspace = true }
+encoding_rs = "0.8"
 bytes = { workspace = true }
 
 # PDF text extraction

@@ -1,7 +1,9 @@
 import { mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import type { Cookie } from './types.js';
+
+const VALID_PROFILE_RE = /^[a-zA-Z0-9_-]+$/;
 
 interface PersistedCookieData {
   cookies: Cookie[];
@@ -17,6 +19,9 @@ export class CookieStore {
 
   saveCookies(profile: string, cookies: Cookie[]): void {
     if (!profile || cookies.length === 0) return;
+    if (!VALID_PROFILE_RE.test(profile)) {
+      throw new Error(`Invalid profile name: "${profile}". Only alphanumeric, underscore, and hyphen characters are allowed.`);
+    }
 
     const profileDir = join(this.profilesDir, profile);
     mkdirSync(profileDir, { recursive: true });

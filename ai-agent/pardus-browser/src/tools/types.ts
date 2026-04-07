@@ -73,7 +73,22 @@ export function canExecuteInParallel(
   }
 
   // Same instance - check if operations are read-only
-  const readOnlyTools = ['browser_get_state', 'browser_list', 'browser_get_cookies', 'browser_get_storage', 'browser_get_action_plan'];
+  const readOnlyTools: string[] = [
+    'browser_get_state',
+    'browser_list',
+    'browser_get_cookies',
+    'browser_get_storage',
+    'browser_get_action_plan',
+    'browser_extract_text',
+    'browser_extract_links',
+    'browser_find',
+    'browser_extract_table',
+    'browser_extract_metadata',
+    'browser_screenshot',
+    'browser_oauth_status',
+    'browser_network_log',
+    'browser_diff',
+  ];
   const isReadOnly1 = readOnlyTools.includes(tool1.name);
   const isReadOnly2 = readOnlyTools.includes(tool2.name);
 

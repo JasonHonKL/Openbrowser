@@ -1,7 +1,7 @@
 //! Navigation operations: navigate, navigate_with_js, reload.
 
-use crate::tab::Tab;
 use super::Browser;
+use crate::tab::Tab;
 
 impl Browser {
     /// Navigate to a URL. Creates a tab if none exists.
@@ -14,19 +14,36 @@ impl Browser {
 
         if self.active_tab.is_none() {
             let id = self.create_tab(url);
-            let tab = self.tabs.get_mut(&id)
+            let tab = self
+                .tabs
+                .get_mut(&id)
                 .ok_or_else(|| anyhow::anyhow!("tab missing after creation"))?;
-            tab.load_with_client(&self.http_client, &self.network_log, &self.config, false, 0).await?;
+            tab.load_with_client(&self.http_client, &self.network_log, &self.config, false, 0)
+                .await?;
             self.active_tab = Some(id);
-            return Ok(self.tabs.get(&id)
+            return Ok(self
+                .tabs
+                .get(&id)
                 .ok_or_else(|| anyhow::anyhow!("tab missing after creation"))?);
         }
 
         let id = self.require_active_id()?;
-        let tab = self.tabs.get_mut(&id)
+        let tab = self
+            .tabs
+            .get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?;
-        tab.navigate_with_client(&self.http_client, &self.network_log, &self.config, url, false, 0).await?;
-        Ok(self.tabs.get(&id)
+        tab.navigate_with_client(
+            &self.http_client,
+            &self.network_log,
+            &self.config,
+            url,
+            false,
+            0,
+        )
+        .await?;
+        Ok(self
+            .tabs
+            .get(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?)
     }
 
@@ -39,33 +56,61 @@ impl Browser {
 
         if self.active_tab.is_none() {
             let id = self.create_tab(url);
-            let tab = self.tabs.get_mut(&id)
+            let tab = self
+                .tabs
+                .get_mut(&id)
                 .ok_or_else(|| anyhow::anyhow!("tab missing after creation"))?;
             tab.config.js_enabled = true;
             tab.config.wait_ms = wait_ms;
-            tab.load_with_client(&self.http_client, &self.network_log, &self.config, true, wait_ms).await?;
+            tab.load_with_client(
+                &self.http_client,
+                &self.network_log,
+                &self.config,
+                true,
+                wait_ms,
+            )
+            .await?;
             self.active_tab = Some(id);
-            return Ok(self.tabs.get(&id)
+            return Ok(self
+                .tabs
+                .get(&id)
                 .ok_or_else(|| anyhow::anyhow!("tab missing after creation"))?);
         }
 
         let id = self.require_active_id()?;
-        let tab = self.tabs.get_mut(&id)
+        let tab = self
+            .tabs
+            .get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?;
         tab.config.js_enabled = true;
         tab.config.wait_ms = wait_ms;
-        tab.navigate_with_client(&self.http_client, &self.network_log, &self.config, url, true, wait_ms).await?;
-        Ok(self.tabs.get(&id)
+        tab.navigate_with_client(
+            &self.http_client,
+            &self.network_log,
+            &self.config,
+            url,
+            true,
+            wait_ms,
+        )
+        .await?;
+        Ok(self
+            .tabs
+            .get(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?)
     }
 
     /// Reload the active tab.
     pub async fn reload(&mut self) -> anyhow::Result<&Tab> {
         let id = self.require_active_id()?;
-        let tab = self.tabs.get_mut(&id)
+        let tab = self
+            .tabs
+            .get_mut(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?;
-        tab.reload_with_client(&self.http_client, &self.network_log, &self.config).await?;
-        Ok(self.tabs.get(&id)
+        tab.reload_with_client(&self.http_client, &self.network_log, &self.config)
+            .await?;
+        Ok(self
+            .tabs
+            .get(&id)
             .ok_or_else(|| anyhow::anyhow!("active tab missing"))?)
     }
 

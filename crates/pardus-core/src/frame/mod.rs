@@ -3,11 +3,14 @@
 //! Supports recursive discovery and parsing of `<iframe>` and `<frame>` elements.
 //! Frame IDs use a dot-separated depth path (e.g., "0", "0.1", "0.1.3").
 
-use scraper::{ElementRef, Html, Selector};
-use serde::{Deserialize, Serialize};
 use std::fmt;
-use tracing::{trace, warn, instrument};
+
+use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
+use tracing::{instrument, trace, warn};
 use url::Url;
+
+use crate::semantic::build_unique_selector;
 
 // ---------------------------------------------------------------------------
 // FrameId
@@ -18,25 +21,15 @@ use url::Url;
 pub struct FrameId(pub String);
 
 impl FrameId {
-    pub fn root() -> Self {
-        Self("0".to_string())
-    }
+    pub fn root() -> Self { Self("0".to_string()) }
 
-    pub fn child(&self, index: usize) -> Self {
-        Self(format!("{}.{}", self.0, index))
-    }
+    pub fn child(&self, index: usize) -> Self { Self(format!("{}.{}", self.0, index)) }
 
-    pub fn depth(&self) -> usize {
-        self.0.split('.').count().saturating_sub(1)
-    }
+    pub fn depth(&self) -> usize { self.0.split('.').count().saturating_sub(1) }
 
-    pub fn is_root(&self) -> bool {
-        self.0 == "0"
-    }
+    pub fn is_root(&self) -> bool { self.0 == "0" }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
+    pub fn as_str(&self) -> &str { &self.0 }
 
     pub fn parent(&self) -> Option<Self> {
         if self.is_root() {
@@ -48,15 +41,11 @@ impl FrameId {
 }
 
 impl fmt::Display for FrameId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
 }
 
 impl Default for FrameId {
-    fn default() -> Self {
-        Self::root()
-    }
+    fn default() -> Self { Self::root() }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,17 +176,17 @@ impl FrameTree {
         }
     }
 
-    pub fn frame_count(&self) -> usize {
-        Self::count_frames(&self.root)
-    }
+    pub fn frame_count(&self) -> usize { Self::count_frames(&self.root) }
 
     fn count_frames(frame: &FrameData) -> usize {
-        1 + frame.child_frames.iter().map(Self::count_frames).sum::<usize>()
+        1 + frame
+            .child_frames
+            .iter()
+            .map(Self::count_frames)
+            .sum::<usize>()
     }
 
-    pub fn max_depth(&self) -> usize {
-        Self::measure_depth(&self.root, 0)
-    }
+    pub fn max_depth(&self) -> usize { Self::measure_depth(&self.root, 0) }
 
     fn measure_depth(frame: &FrameData, current: usize) -> usize {
         if frame.child_frames.is_empty() {
@@ -272,13 +261,16 @@ fn discover_iframes(parent_html: &Html) -> Vec<(usize, DiscoveredFrame)> {
         let srcdoc = el.value().attr("srcdoc").map(|s| s.to_string());
         let sandbox = el.value().attr("sandbox").map(|s| s.to_string());
 
-        discovered.push((idx, DiscoveredFrame {
-            index: idx,
-            selector: build_iframe_selector(&el, parent_html),
-            src,
-            srcdoc,
-            sandbox,
-        }));
+        discovered.push((
+            idx,
+            DiscoveredFrame {
+                index: idx,
+                selector: build_unique_selector(&el, parent_html),
+                src,
+                srcdoc,
+                sandbox,
+            },
+        ));
     }
 
     if !discovered.is_empty() {
@@ -300,7 +292,14 @@ fn fetch_children<'a>(
         for (idx, frame_info) in discovered {
             let frame_id = FrameId::root().child(idx);
             let base_url = parent_base_url.to_string();
-            let child = build_child_frame(frame_id, frame_info, &base_url, http_client, remaining_depth).await;
+            let child = build_child_frame(
+                frame_id,
+                frame_info,
+                &base_url,
+                http_client,
+                remaining_depth,
+            )
+            .await;
             results.push(child);
         }
 
@@ -332,7 +331,13 @@ async fn build_child_frame(
             Vec::new()
         };
         let child_frames = if remaining_depth > 1 {
-            fetch_children(discovered, parent_base_url, http_client, remaining_depth - 1).await
+            fetch_children(
+                discovered,
+                parent_base_url,
+                http_client,
+                remaining_depth - 1,
+            )
+            .await
         } else {
             Vec::new()
         };
@@ -437,53 +442,8 @@ async fn fetch_frame_content(
     Ok((body, final_url))
 }
 
-fn build_iframe_selector(el: &ElementRef, html: &Html) -> String {
-    if let Some(id) = el.value().attr("id") {
-        if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return format!("#{}", id);
-        }
-    }
-    if let Some(name) = el.value().attr("name") {
-        let tag = el.value().name();
-        let candidate = format!("{}[name=\"{}\"]", tag, name);
-        let is_unique = match Selector::parse(&candidate) {
-            Ok(sel) => html.select(&sel).count() == 1,
-            Err(_) => false,
-        };
-        if is_unique {
-            return candidate;
-        }
-    }
-    let mut segments = Vec::new();
-    let mut current = Some(*el);
-    while let Some(node) = current {
-        let tag = node.value().name().to_lowercase();
-        if tag == "body" || tag == "html" {
-            break;
-        }
-        let nth = count_position(&node);
-        segments.push(format!("{}:nth-child({})", tag, nth));
-        current = node.parent().and_then(ElementRef::wrap);
-    }
-    segments.reverse();
-    segments.join(" > ")
-}
-
-fn count_position(el: &ElementRef) -> usize {
-    if let Some(parent) = el.parent().and_then(ElementRef::wrap) {
-        let mut count = 0;
-        for child in parent.children() {
-            if let Some(child_el) = ElementRef::wrap(child) {
-                count += 1;
-                if std::ptr::eq(child_el.tree(), el.tree()) {
-                    return count;
-                }
-            }
-        }
-    }
-    1
-}
-
+// ---------------------------------------------------------------------------
+// Tests
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -557,7 +517,10 @@ mod tests {
         assert_eq!(tree.frame_count(), 1);
         assert_eq!(tree.max_depth(), 0);
         assert!(tree.find_frame(&FrameId::root()).is_some());
-        assert!(tree.find_frame(&FrameId::child(&FrameId::root(), 0)).is_none());
+        assert!(
+            tree.find_frame(&FrameId::child(&FrameId::root(), 0))
+                .is_none()
+        );
     }
 
     #[test]

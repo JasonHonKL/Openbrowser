@@ -11,6 +11,7 @@ pub mod intercept;
 #[cfg(feature = "js")]
 pub mod js;
 pub mod navigation;
+pub mod oauth;
 pub mod output;
 pub mod page;
 pub mod page_analysis;
@@ -37,7 +38,7 @@ pub use app::App;
 pub use browser::Browser;
 pub use config::{BrowserConfig, ProxyConfig, CspConfig, RetryConfig};
 pub use page::Page;
-pub use page::{RedirectHop, RedirectChain};
+pub use page::{RedirectHop, RedirectChain, OAuthNavigateResult};
 pub use sandbox::{JsSandboxMode, SandboxPolicy};
 pub use page::PageSnapshot;
 pub use url_policy::UrlPolicy;
@@ -62,6 +63,12 @@ pub use interact::action_plan::{ActionPlan, ActionType, PageType, SuggestedActio
 pub use interact::auto_fill::{AutoFillValues, AutoFillResult, ValidationStatus};
 #[cfg(feature = "js")]
 pub use interact::recording::{SessionRecording, SessionRecorder, RecordedAction, RecordedActionType, ReplayStepResult, replay};
+pub use oauth::{
+    exchange_code, refresh_tokens, start_authorization, StartFlowResult,
+    discover as oidc_discover, OpenIdConfiguration, PkcePair,
+    OAuthProviderConfig, OAuthSession, OAuthSessionManager, OAuthSessionStatus, SessionSummary,
+    validate_id_token, IdTokenClaims, OAuthTokenSet,
+};
 pub use tab::tab::TabConfig;
 pub use tab::{Tab, TabId, TabManager};
 pub use intercept::InterceptorManager;

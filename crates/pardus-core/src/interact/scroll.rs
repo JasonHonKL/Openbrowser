@@ -1,9 +1,9 @@
 use std::sync::Arc;
+
 use url::Url;
 
-use crate::app::App;
-use crate::page::Page;
 use super::actions::InteractionResult;
+use crate::{app::App, page::Page};
 
 /// Scroll direction.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -37,8 +37,8 @@ pub async fn scroll(
         }
         None => Ok(InteractionResult::ElementNotFound {
             selector: String::new(),
-            reason: "no pagination pattern detected in URL. \
-                     Try enabling JS execution for AJAX-based infinite scroll."
+            reason: "no pagination pattern detected in URL. Try enabling JS execution for \
+                     AJAX-based infinite scroll."
                 .to_string(),
         }),
     }
@@ -103,7 +103,7 @@ fn detect_next_page_url(current_url: &str, direction: ScrollDirection) -> Option
 
     // Strategy 4: Path-based pagination (/page/2, /p/2)
     let path = url.path().to_string();
-    let mut segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
     for i in (1..segments.len()).rev() {
         let prev = segments[i - 1].to_lowercase();
@@ -116,8 +116,10 @@ fn detect_next_page_url(current_url: &str, direction: ScrollDirection) -> Option
                 if next_page == 0 {
                     return None;
                 }
-                segments[i] = Box::leak(next_page.to_string().into_boxed_str());
-                let new_path = format!("/{}", segments.join("/"));
+                let mut owned_segments: Vec<String> =
+                    segments.iter().map(|s| s.to_string()).collect();
+                owned_segments[i] = next_page.to_string();
+                let new_path = format!("/{}", owned_segments.join("/"));
                 url.set_path(&new_path);
                 return Some(url.to_string());
             }

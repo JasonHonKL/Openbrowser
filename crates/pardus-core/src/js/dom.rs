@@ -4,6 +4,44 @@ use std::collections::{HashMap, HashSet};
 /// Unique ID for a DOM node.
 pub type NodeId = u32;
 
+// ---------------------------------------------------------------------------
+// Structural mutations (for incremental semantic tree updates)
+// ---------------------------------------------------------------------------
+
+/// A simplified mutation record for incremental semantic tree updates.
+///
+/// Unlike `MutationRecord` (which targets JS `MutationObserver` delivery),
+/// this always captures CSS selectors so the incremental update engine can
+/// locate affected subtrees in the `SemanticTree`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StructuralMutation {
+    /// What kind of mutation occurred.
+    pub kind: StructuralMutationKind,
+    /// CSS selector of the target element at the time of mutation.
+    pub target_selector: Option<String>,
+    /// CSS selector of the target's parent element.
+    pub parent_selector: Option<String>,
+    /// Tag name of the target element.
+    pub target_tag: Option<String>,
+    /// For childList mutations: CSS selectors of added elements.
+    pub added_selectors: Vec<String>,
+    /// For childList mutations: CSS selectors of removed elements (captured before removal).
+    pub removed_selectors: Vec<String>,
+    /// For attributes: the attribute name that changed.
+    pub attribute_name: Option<String>,
+    /// The selector of the target BEFORE the mutation (for id/name changes that
+    /// alter the selector itself).
+    pub old_target_selector: Option<String>,
+}
+
+/// Kind of structural DOM mutation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum StructuralMutationKind {
+    ChildList,
+    Attributes,
+    CharacterData,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MutationRecord {
     pub type_: String,
@@ -73,6 +111,10 @@ pub struct DomDocument {
     undo_stack: Vec<String>,
     /// HTML snapshot stack for redo.
     redo_stack: Vec<String>,
+    /// Unconditional structural mutations for incremental semantic tree updates.
+    /// Unlike `pending_mutations` (which are observer-scoped and conditional),
+    /// this log always records every DOM change regardless of observers.
+    structural_mutations: Vec<StructuralMutation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,6 +177,7 @@ impl DomDocument {
             max_nodes: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            structural_mutations: Vec::new(),
         };
 
         // Create document root
@@ -618,6 +661,13 @@ impl DomDocument {
         attribute_name: Option<String>,
         old_value: Option<String>,
     ) {
+        // Always record structural mutation (for incremental semantic tree updates).
+        // Must happen before the observer early-return and before any node removal.
+        self.record_structural_mutation(
+            type_, target, &added_nodes, &removed_nodes, attribute_name.clone(), None,
+        );
+
+        // Observer-delivery path (existing logic, gated by observers)
         if self.observers.is_empty() {
             return;
         }
@@ -641,6 +691,156 @@ impl DomDocument {
     /// Enqueue a simple mutation (no added/removed nodes).
     pub fn queue_simple_mutation(&mut self, type_: &str, target: u32) {
         self.queue_mutation(type_, target, vec![], vec![], None, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Structural mutation tracking (for incremental semantic tree updates)
+    // -----------------------------------------------------------------------
+
+    /// Compute a unique CSS selector for a DOM node by walking its parent chain.
+    ///
+    /// Strategy mirrors `build_unique_selector` in `semantic/tree.rs`:
+    /// 1. `#id` if the element has a non-empty `id` attribute
+    /// 2. `tag[name="..."]` if unique among same-tag siblings
+    /// 3. Structural path: `body > div:nth-child(2) > form > input`
+    pub fn build_selector_for_node(&self, node_id: NodeId) -> Option<String> {
+        let node = self.nodes.get(&node_id)?;
+        if node.node_type != DomNodeType::Element {
+            return None;
+        }
+
+        // Prefer #id
+        if let Some(id) = node.attributes.get("id") {
+            if !id.is_empty() {
+                return Some(format!("#{}", css_escape_dom_id(id)));
+            }
+        }
+
+        // Try tag[name="..."] if unique
+        if let Some(name) = node.attributes.get("name") {
+            let tag = node.tag_name.as_deref()?;
+            let candidate = format!(r#"{}[name="{}"]"#, tag, name);
+            if let Some(ids) = self.tag_index.get(tag) {
+                let matching: Vec<NodeId> = ids
+                    .iter()
+                    .filter(|&&id| {
+                        self.nodes
+                            .get(&id)
+                            .and_then(|n| n.attributes.get("name"))
+                            .map_or(false, |n| n == name)
+                    })
+                    .copied()
+                    .collect();
+                if matching.len() == 1 {
+                    return Some(candidate);
+                }
+            }
+        }
+
+        // Build structural path
+        self.build_structural_path(node_id)
+    }
+
+    fn build_structural_path(&self, node_id: NodeId) -> Option<String> {
+        let mut segments = Vec::new();
+        let mut current = Some(node_id);
+
+        while let Some(nid) = current {
+            let node = self.nodes.get(&nid)?;
+            let tag = node.tag_name.as_deref()?;
+
+            if tag == "body" || tag == "html" {
+                break;
+            }
+
+            let nth = self.count_element_position_in_dom(nid);
+            segments.push(format!("{}:nth-child({})", tag, nth));
+
+            current = node.parent_id;
+        }
+
+        segments.reverse();
+        if segments.is_empty() {
+            None
+        } else {
+            Some(segments.join(" > "))
+        }
+    }
+
+    fn count_element_position_in_dom(&self, node_id: NodeId) -> usize {
+        let parent_id = match self.nodes.get(&node_id).and_then(|n| n.parent_id) {
+            Some(id) => id,
+            None => return 1,
+        };
+        let parent = match self.nodes.get(&parent_id) {
+            Some(n) => n,
+            None => return 1,
+        };
+        let mut count = 0;
+        for &child_id in &parent.children {
+            if let Some(child) = self.nodes.get(&child_id) {
+                if child.node_type == DomNodeType::Element {
+                    count += 1;
+                }
+            }
+            if child_id == node_id {
+                return count;
+            }
+        }
+        count
+    }
+
+    /// Record a structural mutation unconditionally (regardless of JS observers).
+    fn record_structural_mutation(
+        &mut self,
+        type_: &str,
+        target: NodeId,
+        added_nodes: &[NodeId],
+        removed_nodes: &[NodeId],
+        attribute_name: Option<String>,
+        old_target_selector: Option<String>,
+    ) {
+        let target_selector = self.build_selector_for_node(target);
+        let parent_selector = self
+            .nodes
+            .get(&target)
+            .and_then(|n| n.parent_id)
+            .and_then(|pid| self.build_selector_for_node(pid));
+        let target_tag = self.nodes.get(&target).and_then(|n| n.tag_name.clone());
+
+        // Capture selectors for added nodes
+        let added_sels: Vec<String> = added_nodes
+            .iter()
+            .filter_map(|&id| self.build_selector_for_node(id))
+            .collect();
+
+        // Capture selectors for removed nodes (they still exist at this point
+        // because `queue_mutation` is called *before* `remove_recursive`)
+        let removed_sels: Vec<String> = removed_nodes
+            .iter()
+            .filter_map(|&id| self.build_selector_for_node(id))
+            .collect();
+
+        self.structural_mutations.push(StructuralMutation {
+            kind: match type_ {
+                "childList" => StructuralMutationKind::ChildList,
+                "attributes" => StructuralMutationKind::Attributes,
+                "characterData" => StructuralMutationKind::CharacterData,
+                _ => return, // Unknown type, skip
+            },
+            target_selector,
+            parent_selector,
+            target_tag,
+            added_selectors: added_sels,
+            removed_selectors: removed_sels,
+            attribute_name,
+            old_target_selector,
+        });
+    }
+
+    /// Drain all recorded structural mutations, clearing the log.
+    pub fn drain_structural_mutations(&mut self) -> Vec<StructuralMutation> {
+        std::mem::take(&mut self.structural_mutations)
     }
 
     /// Drain all pending mutations grouped by observer ID.
@@ -2733,5 +2933,308 @@ mod tests {
         // Redo to v3 (current state before first undo)
         assert!(doc.redo());
         assert_eq!(doc.get_text_content(doc.get_element_by_id("target").unwrap()), "v3");
+    }
+
+    // ==================== Shadow DOM Stub Tests ====================
+
+    #[test]
+    fn test_shadow_root_stubs_return_none() {
+        let html = "<html><body><div id=\"host\">content</div></body></html>";
+        let doc = DomDocument::from_html(html);
+        let host = doc.get_element_by_id("host").unwrap();
+        assert!(doc.get_shadow_root(host).is_none());
+    }
+
+    #[test]
+    fn test_is_shadow_host_stubs_return_false() {
+        let html = "<html><body><div id=\"host\">content</div></body></html>";
+        let doc = DomDocument::from_html(html);
+        let host = doc.get_element_by_id("host").unwrap();
+        assert!(!doc.is_shadow_host(host));
+    }
+
+    #[test]
+    fn test_query_selector_deep_alias_works() {
+        let html = "<html><body><div id=\"outer\"><span id=\"inner\">text</span></div></body></html>";
+        let doc = DomDocument::from_html(html);
+        let result = doc.query_selector_deep(0, "#inner");
+        assert!(result.is_some());
+        assert_eq!(doc.get_text_content(result.unwrap()), "text");
+    }
+
+    #[test]
+    fn test_query_selector_all_deep_alias_works() {
+        let html = "<html><body><ul><li class=\"item\">a</li><li class=\"item\">b</li></ul></body></html>";
+        let doc = DomDocument::from_html(html);
+        let results = doc.query_selector_all_deep(0, ".item");
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_collect_all_elements_deep() {
+        let html = "<html><body><div><span>a</span><span>b</span></div></body></html>";
+        let doc = DomDocument::from_html(html);
+        let body = doc.body();
+        let elements = doc.collect_all_elements_deep(body);
+        // body + div + 2 spans = 4
+        assert!(elements.len() >= 3);
+    }
+
+    // ==================== MutationObserver Tests ====================
+
+    #[test]
+    fn test_register_observer_returns_incrementing_ids() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"a\"></div><div id=\"b\"></div></body></html>");
+        let a = doc.get_element_by_id("a").unwrap();
+        let b = doc.get_element_by_id("b").unwrap();
+        let id1 = doc.register_observer(a, MutationObserverInit::default());
+        let id2 = doc.register_observer(b, MutationObserverInit::default());
+        assert!(id1 < id2);
+    }
+
+    #[test]
+    fn test_disconnect_observer_removes_observer() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\"></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+        let obs_id = doc.register_observer(target, MutationObserverInit::default());
+        assert!(doc.has_observers());
+        doc.disconnect_observer(obs_id);
+        assert!(!doc.has_observers());
+    }
+
+    #[test]
+    fn test_disconnect_nonexistent_is_noop() {
+        let mut doc = DomDocument::from_html("<html><body></body></html>");
+        doc.disconnect_observer(999);
+    }
+
+    #[test]
+    fn test_child_list_mutation_on_append() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\"></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+        let mut opts = MutationObserverInit::default();
+        opts.child_list = true;
+        doc.register_observer(target, opts);
+
+        let child = doc.create_element("span");
+        doc.append_child(target, child);
+
+        let records = doc.drain_all_pending_mutations();
+        assert_eq!(records.len(), 1);
+        let (_obs_id, mutations) = &records[0];
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].type_, "childList");
+        assert_eq!(mutations[0].target, target);
+        assert!(mutations[0].added_nodes.contains(&child));
+        assert!(mutations[0].removed_nodes.is_empty());
+    }
+
+    #[test]
+    fn test_child_list_mutation_on_remove() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\"><span id=\"child\">x</span></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+        let child = doc.get_element_by_id("child").unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.child_list = true;
+        doc.register_observer(target, opts);
+
+        doc.remove_child(target, child);
+
+        let records = doc.drain_all_pending_mutations();
+        assert_eq!(records.len(), 1);
+        let (_, mutations) = &records[0];
+        assert_eq!(mutations[0].removed_nodes.len(), 1);
+        assert!(mutations[0].added_nodes.is_empty());
+    }
+
+    #[test]
+    fn test_attribute_mutation_captures_old_value() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\" class=\"old\"></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.attributes = true;
+        opts.attribute_old_value = true;
+        doc.register_observer(target, opts);
+
+        doc.set_attribute(target, "class", "new");
+
+        let records = doc.drain_all_pending_mutations();
+        assert_eq!(records.len(), 1);
+        let (_, mutations) = &records[0];
+        assert_eq!(mutations[0].type_, "attributes");
+        assert_eq!(mutations[0].attribute_name, Some("class".to_string()));
+        assert_eq!(mutations[0].old_value, Some("old".to_string()));
+    }
+
+    #[test]
+    fn test_attribute_filter_only_matching() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\" class=\"a\"></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.attributes = true;
+        opts.attribute_filter = vec!["class".to_string()];
+        doc.register_observer(target, opts);
+
+        // Change class — should be observed
+        doc.set_attribute(target, "class", "b");
+        // Change data-x — should NOT be observed (not in filter)
+        doc.set_attribute(target, "data-x", "y");
+
+        let records = doc.drain_all_pending_mutations();
+        assert_eq!(records.len(), 1);
+        let (_, mutations) = &records[0];
+        // Only the class mutation should be delivered
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].attribute_name, Some("class".to_string()));
+    }
+
+    #[test]
+    fn test_character_data_mutation() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\">hello</div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+        let children = doc.get_children(target);
+        let text_id = children.into_iter().find(|&c| doc.get_node_type(c) == 3).unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.character_data = true;
+        opts.character_data_old_value = true;
+        doc.register_observer(target, opts);
+
+        doc.set_node_value(text_id, "world");
+
+        let records = doc.drain_all_pending_mutations();
+        assert_eq!(records.len(), 1);
+        let (_, mutations) = &records[0];
+        assert_eq!(mutations[0].type_, "characterData");
+        assert_eq!(mutations[0].old_value, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_subtree_observer_catches_child_mutations() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"parent\"><div id=\"child\"></div></div></body></html>");
+        let parent = doc.get_element_by_id("parent").unwrap();
+        let child = doc.get_element_by_id("child").unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.child_list = true;
+        opts.subtree = true;
+        doc.register_observer(parent, opts);
+
+        // Mutation on child should bubble to parent's observer
+        let grandchild = doc.create_element("span");
+        doc.append_child(child, grandchild);
+
+        let records = doc.drain_all_pending_mutations();
+        assert_eq!(records.len(), 1);
+        let (_, mutations) = &records[0];
+        assert_eq!(mutations[0].target, child);
+    }
+
+    #[test]
+    fn test_no_subtree_observer_ignores_child_mutations() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"parent\"><div id=\"child\"></div></div></body></html>");
+        let parent = doc.get_element_by_id("parent").unwrap();
+        let child = doc.get_element_by_id("child").unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.child_list = true;
+        opts.subtree = false;
+        doc.register_observer(parent, opts);
+
+        let grandchild = doc.create_element("span");
+        doc.append_child(child, grandchild);
+
+        let records = doc.drain_all_pending_mutations();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_observers_same_target() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\"></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.child_list = true;
+        let obs1 = doc.register_observer(target, opts.clone());
+        let obs2 = doc.register_observer(target, opts);
+
+        let child = doc.create_element("span");
+        doc.append_child(target, child);
+
+        let records = doc.drain_all_pending_mutations();
+        assert_eq!(records.len(), 2);
+        let ids: Vec<u32> = records.iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&obs1));
+        assert!(ids.contains(&obs2));
+    }
+
+    #[test]
+    fn test_take_mutation_records_returns_empty_after_drain() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\"></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.child_list = true;
+        doc.register_observer(target, opts);
+
+        let child = doc.create_element("span");
+        doc.append_child(target, child);
+
+        let first = doc.drain_all_pending_mutations();
+        assert!(!first.is_empty());
+        let second = doc.drain_all_pending_mutations();
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn test_no_observers_no_mutations_queued() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\"></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+        let child = doc.create_element("span");
+        doc.append_child(target, child);
+        let records = doc.drain_all_pending_mutations();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn test_queue_simple_mutation() {
+        let mut doc = DomDocument::from_html("<html><body><div id=\"target\"></div></body></html>");
+        let target = doc.get_element_by_id("target").unwrap();
+
+        let mut opts = MutationObserverInit::default();
+        opts.child_list = true;
+        doc.register_observer(target, opts);
+
+        doc.queue_simple_mutation("childList", target);
+
+        let records = doc.drain_all_pending_mutations();
+        assert_eq!(records.len(), 1);
+        let (_, mutations) = &records[0];
+        assert_eq!(mutations[0].type_, "childList");
+        assert!(mutations[0].added_nodes.is_empty());
+        assert!(mutations[0].removed_nodes.is_empty());
+    }
+}
+
+/// Escape a DOM id value for use in a CSS selector.
+fn css_escape_dom_id(id: &str) -> String {
+    if id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        id.to_string()
+    } else {
+        id.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c.to_string()
+                } else {
+                    format!("\\{:X}", c as u32)
+                }
+            })
+            .collect()
     }
 }

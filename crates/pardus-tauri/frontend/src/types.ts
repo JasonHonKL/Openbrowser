@@ -77,3 +77,110 @@ export interface StatusChange {
   old_status: AgentStatus;
   new_status: AgentStatus;
 }
+
+// ---------------------------------------------------------------------------
+// AI Agent types
+// ---------------------------------------------------------------------------
+
+export type AgentRunStatus =
+  | "idle"
+  | "thinking"
+  | "executing_tool"
+  | "waiting_challenge"
+  | "error";
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  toolCalls?: ToolCallInfo[];
+  timestamp: number;
+  isStreaming?: boolean;
+}
+
+export interface ToolCallInfo {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+  result?: {
+    success: boolean;
+    duration_ms: number;
+  };
+}
+
+export interface AgentConfig {
+  apiKey: string;
+  model: string;
+  baseURL: string;
+  temperature: number;
+  maxTokens: number;
+  maxRounds: number;
+}
+
+export interface AgentThinkingEvent {
+  instance_id: string;
+  chunk: string;
+}
+
+export interface AgentToolCallEvent {
+  instance_id: string;
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface AgentToolResultEvent {
+  instance_id: string;
+  id: string;
+  name: string;
+  success: boolean;
+  duration_ms: number;
+}
+
+export interface AgentErrorEvent {
+  instance_id: string;
+  message: string;
+}
+
+export interface AgentCompleteEvent {
+  instance_id: string;
+  content: string;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: Multi-Agent Dashboard types
+// ---------------------------------------------------------------------------
+
+export type ViewMode = "grid" | "detail";
+
+export interface GlobalActionEntry {
+  id: string;
+  instanceId: string;
+  timestamp: number;
+  type:
+    | "navigate"
+    | "action_start"
+    | "action_complete"
+    | "action_fail"
+    | "thinking"
+    | "tool_call"
+    | "tool_result"
+    | "error";
+  summary: string;
+  detail?: string;
+}
+
+export interface TakeOverState {
+  instanceId: string;
+  active: boolean;
+  pausedAt: number | null;
+}
+
+export interface InstanceState {
+  messages: ChatMessage[];
+  agentRunStatus: AgentRunStatus;
+  agentConnected: boolean;
+  tree: SemanticNode | null;
+  treeStats: TreeStats | null;
+  events: CdpEvent[];
+}

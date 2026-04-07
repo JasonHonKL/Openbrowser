@@ -5,14 +5,14 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use std::{collections::HashMap, sync::Arc};
 
-    use pardus_cdp::domain::{DomainContext, TargetEntry};
-    use pardus_cdp::protocol::event_bus::EventBus;
-    use pardus_cdp::protocol::node_map::NodeMap;
+    use pardus_cdp::{
+        domain::{DomainContext, TargetEntry},
+        protocol::{event_bus::EventBus, node_map::NodeMap},
+    };
     use pardus_core::{App, BrowserConfig};
+    use tokio::sync::Mutex;
 
     // ---------------------------------------------------------------------------
     // DomainContext Creation Tests
@@ -20,7 +20,7 @@ mod tests {
 
     #[test]
     fn test_domain_context_new() {
-        let app = Arc::new(App::new(BrowserConfig::default()));
+        let app = Arc::new(App::new(BrowserConfig::default()).unwrap());
         let targets = Arc::new(Mutex::new(HashMap::<String, TargetEntry>::new()));
         let event_bus = Arc::new(EventBus::new(1024));
         let node_map = Arc::new(Mutex::new(NodeMap::new()));
@@ -58,6 +58,7 @@ mod tests {
             title: Some("Example".to_string()),
             js_enabled: true,
             frame_tree_json: None,
+            form_state: HashMap::new(),
         };
 
         assert_eq!(entry.url, "https://example.com");
@@ -74,6 +75,7 @@ mod tests {
             title: None,
             js_enabled: false,
             frame_tree_json: None,
+            form_state: HashMap::new(),
         };
 
         let cloned = entry.clone();

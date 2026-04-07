@@ -1,9 +1,10 @@
+use std::{collections::HashMap, fmt};
+
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt;
 use url::Url;
 
+use super::selector::{build_unique_selector, css_escape_id};
 use crate::frame::{FrameData, FrameTree};
 
 // ---------------------------------------------------------------------------
@@ -90,9 +91,7 @@ pub struct SemanticNode {
     pub children: Vec<SemanticNode>,
 }
 
-fn is_false(v: &bool) -> bool {
-    !v
-}
+fn is_false(v: &bool) -> bool { !v }
 
 /// An option within a <select> element.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,18 +156,14 @@ pub enum SemanticRole {
 
 impl Serialize for SemanticRole {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
+    where S: serde::Serializer {
         serializer.serialize_str(&self.to_string())
     }
 }
 
 impl<'de> Deserialize<'de> for SemanticRole {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
+    where D: serde::Deserializer<'de> {
         let s = String::deserialize(deserializer)?;
         Ok(parse_role_str(&s))
     }
@@ -235,9 +230,7 @@ impl SemanticRole {
         )
     }
 
-    pub fn is_heading(&self) -> bool {
-        matches!(self, Self::Heading { .. })
-    }
+    pub fn is_heading(&self) -> bool { matches!(self, Self::Heading { .. }) }
 }
 
 impl SemanticTree {
@@ -289,6 +282,58 @@ fn count_nodes(node: &SemanticNode) -> usize {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Check whether an inline `style` attribute makes the element invisible.
+///
+/// Handles the most common CSS patterns that hide content:
+/// - `display: none` / `display:none`
+/// - `visibility: hidden` / `visibility:hidden` / `visibility: collapse`
+/// - `opacity: 0` / `opacity:0` (also catches `opacity: 0.0`, `opacity:0.00`)
+/// - `clip-path: inset(100%)` / `clip: rect(0,0,0,0)` (accessibility hiding)
+///
+/// This is intentionally conservative: it only matches the most common patterns
+/// that unambiguously hide content. Complex CSS rules (classes, external stylesheets)
+/// are not handled here — this catches only inline `style` attribute hiding.
+fn is_css_hidden(style: Option<&str>) -> bool {
+    let style = match style {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let lower = style.to_ascii_lowercase();
+
+    // Fast path: if none of these substrings appear, no need to check further
+    if !lower.contains("display")
+        && !lower.contains("visibility")
+        && !lower.contains("opacity")
+        && !lower.contains("clip")
+    {
+        return false;
+    }
+
+    for decl in lower.split(';') {
+        let decl = decl.trim();
+        if let Some((prop, val)) = decl.split_once(':') {
+            let prop = prop.trim();
+            let val = val.trim();
+            match prop {
+                "display" if val == "none" => return true,
+                "visibility" if val == "hidden" || val == "collapse" => return true,
+                "opacity" => {
+                    // Match 0, 0.0, 0.00 etc.
+                    if val.starts_with('0') && (val.len() == 1 || val.chars().nth(1) == Some('.')) {
+                        return true;
+                    }
+                }
+                "clip-path" if val.contains("inset(100%)") => return true,
+                "clip" if val.starts_with("rect(0") => return true,
+                _ => {}
+            }
+        }
+    }
+
+    false
+}
 
 fn make_static_text(content: &str) -> SemanticNode {
     SemanticNode {
@@ -402,6 +447,11 @@ impl<'a> TreeBuilder<'a> {
             return None;
         }
 
+        // Skip CSS-hidden elements (display:none, visibility:hidden, opacity:0)
+        if is_css_hidden(el.value().attr("style")) {
+            return None;
+        }
+
         // Skip hidden form inputs — they carry data, not UI
         if tag_str == "input" {
             if let Some(t) = el.value().attr("type") {
@@ -461,9 +511,10 @@ impl<'a> TreeBuilder<'a> {
 
         // Update stats
         // Per ARIA spec: form and region are only landmarks when they have an accessible name
-        let is_named_form_or_region = matches!(role, SemanticRole::Form | SemanticRole::Region) && has_name;
-        let is_other_landmark = role.is_landmark()
-            && !matches!(role, SemanticRole::Form | SemanticRole::Region);
+        let is_named_form_or_region =
+            matches!(role, SemanticRole::Form | SemanticRole::Region) && has_name;
+        let is_other_landmark =
+            role.is_landmark() && !matches!(role, SemanticRole::Form | SemanticRole::Region);
         if is_other_landmark || is_named_form_or_region {
             self.stats.landmarks += 1;
         }
@@ -762,124 +813,15 @@ impl<'a> TreeBuilder<'a> {
     }
 
     fn compute_role(&self, tag: &str, el: &ElementRef, has_name: bool) -> SemanticRole {
-        // Check explicit role attribute first
-        if let Some(role_str) = el.value().attr("role") {
-            return parse_role_str(role_str);
-        }
-
-        // Implicit roles based on tag
-        match tag {
-            "nav" => SemanticRole::Navigation,
-            "main" => SemanticRole::Main,
-            "header" => SemanticRole::Banner,
-            "footer" => SemanticRole::ContentInfo,
-            "aside" => SemanticRole::Complementary,
-            "search" => SemanticRole::Search,
-            "section" if has_name => SemanticRole::Region,
-            "article" => SemanticRole::Article,
-            "form" if has_name => SemanticRole::Form,
-            "form" => SemanticRole::Form,
-
-            "h1" => SemanticRole::Heading { level: 1 },
-            "h2" => SemanticRole::Heading { level: 2 },
-            "h3" => SemanticRole::Heading { level: 3 },
-            "h4" => SemanticRole::Heading { level: 4 },
-            "h5" => SemanticRole::Heading { level: 5 },
-            "h6" => SemanticRole::Heading { level: 6 },
-
-            "a" => SemanticRole::Link,
-            "button" => SemanticRole::Button,
-            "input" => match el.value().attr("type").unwrap_or("text") {
-                "checkbox" => SemanticRole::Checkbox,
-                "radio" => SemanticRole::Radio,
-                "file" => SemanticRole::FileInput,
-                "submit" | "reset" | "button" | "image" => SemanticRole::Button,
-                _ => SemanticRole::TextBox,
-            },
-            "select" => SemanticRole::Combobox,
-            "textarea" => SemanticRole::TextBox,
-            "img" => SemanticRole::Image,
-            "ul" | "ol" => SemanticRole::List,
-            "li" => SemanticRole::ListItem,
-            "table" => SemanticRole::Table,
-            "dialog" => SemanticRole::Dialog,
-
-            _ => SemanticRole::Generic,
-        }
+        super::extract::compute_role(tag, el, has_name)
     }
 
     fn check_interactive(&self, tag: &str, el: &ElementRef) -> bool {
-        // Native interactive
-        if matches!(
-            tag,
-            "a" | "button" | "input" | "select" | "textarea" | "details"
-        ) {
-            return !(tag == "a" && el.value().attr("href").is_none());
-        }
-
-        // ARIA interactive
-        if let Some(role) = el.value().attr("role") {
-            if matches!(
-                role,
-                "button"
-                    | "link"
-                    | "textbox"
-                    | "checkbox"
-                    | "radio"
-                    | "combobox"
-                    | "switch"
-                    | "tab"
-                    | "menuitem"
-                    | "option"
-            ) {
-                return true;
-            }
-        }
-
-        // Focusable
-        if let Some(tabindex) = el.value().attr("tabindex") {
-            if let Ok(idx) = tabindex.parse::<i32>() {
-                if idx >= 0 {
-                    return true;
-                }
-            }
-        }
-
-        false
+        super::extract::check_interactive(tag, el)
     }
 
     fn compute_action(&self, tag: &str, el: &ElementRef, is_interactive: bool) -> Option<String> {
-        if !is_interactive {
-            return None;
-        }
-
-        match tag {
-            "a" => Some("navigate".to_string()),
-            "button" => Some("click".to_string()),
-            "input" => {
-                let input_type = el.value().attr("type").unwrap_or("text");
-                Some(match input_type {
-                    "submit" | "reset" | "button" | "image" => "click".to_string(),
-                    "checkbox" | "radio" => "toggle".to_string(),
-                    "file" => "upload".to_string(),
-                    _ => "fill".to_string(),
-                })
-            }
-            "select" => Some("select".to_string()),
-            "textarea" => Some("fill".to_string()),
-            _ => {
-                if let Some(role) = el.value().attr("role") {
-                    match role {
-                        "button" => Some("click".to_string()),
-                        "link" => Some("navigate".to_string()),
-                        "textbox" => Some("fill".to_string()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }
-        }
+        super::extract::compute_action(tag, el, is_interactive)
     }
 
     fn resolve_url(&self, href: &str) -> String {
@@ -896,9 +838,10 @@ impl<'a> TreeBuilder<'a> {
             .filter_map(|id| {
                 let sel = format!("#{}", css_escape_id(id));
                 Selector::parse(&sel).ok().and_then(|s| {
-                    self.html.select(&s).next().map(|el| {
-                        el.text().collect::<String>().trim().to_string()
-                    })
+                    self.html
+                        .select(&s)
+                        .next()
+                        .map(|el| el.text().collect::<String>().trim().to_string())
                 })
             })
             .filter(|s| !s.is_empty())
@@ -907,166 +850,13 @@ impl<'a> TreeBuilder<'a> {
     }
 }
 
-fn parse_role_str(s: &str) -> SemanticRole {
-    match s {
-        "document" => SemanticRole::Document,
-        "banner" => SemanticRole::Banner,
-        "navigation" => SemanticRole::Navigation,
-        "main" => SemanticRole::Main,
-        "contentinfo" => SemanticRole::ContentInfo,
-        "complementary" => SemanticRole::Complementary,
-        "region" => SemanticRole::Region,
-        "form" => SemanticRole::Form,
-        "search" => SemanticRole::Search,
-        "article" => SemanticRole::Article,
-        "link" => SemanticRole::Link,
-        "button" => SemanticRole::Button,
-        "textbox" => SemanticRole::TextBox,
-        "fileinput" => SemanticRole::FileInput,
-        "checkbox" => SemanticRole::Checkbox,
-        "radio" => SemanticRole::Radio,
-        "combobox" => SemanticRole::Combobox,
-        "list" => SemanticRole::List,
-        "listitem" => SemanticRole::ListItem,
-        "table" => SemanticRole::Table,
-        "img" => SemanticRole::Image,
-        "dialog" => SemanticRole::Dialog,
-        "iframe" => SemanticRole::IFrame,
-        _ => SemanticRole::Other(s.to_string()),
-    }
-}
+fn parse_role_str(s: &str) -> SemanticRole { super::extract::parse_role_str(s) }
 
 // ---------------------------------------------------------------------------
 // Unique Selector Builder
 // ---------------------------------------------------------------------------
 
 /// Build a unique CSS selector for an element.
-///
-/// - If the element has an `id`, uses `#id`.
-/// - Otherwise, prefers attribute-based selectors like `input[name="foo"]`
-///   if they are unique in the document.
-/// - Falls back to a structural path: `body > div:nth-child(2) > form > input`
-fn build_unique_selector(el: &ElementRef, html: &Html) -> String {
-    // Prefer id
-    if let Some(id) = el.value().attr("id") {
-        return format!("#{}", css_escape_id(id));
-    }
-
-    // Try name-based selector
-    if let Some(name) = el.value().attr("name") {
-        let tag = el.value().name();
-        let candidate = format!("{}[name=\"{}\"]", tag, name);
-        let is_unique = match Selector::parse(&candidate) {
-            Ok(sel) => html.select(&sel).count() == 1,
-            Err(_) => false,
-        };
-        if is_unique {
-            return candidate;
-        }
-    }
-
-    // Try href-based selector for links
-    if let Some(href) = el.value().attr("href") {
-        let tag = el.value().name();
-        let escaped = css_escape_attr(href);
-        let candidate = format!("{}[href=\"{}\"]", tag, escaped);
-        // Check if this selector is valid and unique
-        let is_unique = match Selector::parse(&candidate) {
-            Ok(sel) => html.select(&sel).count() == 1,
-            Err(_) => false,
-        };
-        if is_unique {
-            return candidate;
-        }
-    }
-
-    // Try type + name combination for inputs
-    if let Some(itype) = el.value().attr("type") {
-        let tag = el.value().name();
-        let candidate = format!("{}[type=\"{}\"]", tag, itype);
-        let is_unique = match Selector::parse(&candidate) {
-            Ok(sel) => html.select(&sel).count() == 1,
-            Err(_) => false,
-        };
-        if is_unique {
-            return candidate;
-        }
-    }
-
-    // Build structural path
-    build_structural_selector(el)
-}
-
-fn css_escape_id(id: &str) -> String {
-    if id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        id.to_string()
-    } else {
-        id.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c.to_string()
-                } else {
-                    format!("\\{:X}", c as u32)
-                }
-            })
-            .collect()
-    }
-}
-
-fn css_escape_attr(s: &str) -> String {
-    // For attribute values, we don't need to escape # since we're inside quotes
-    // We just need to escape the quote character and backslash
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn build_structural_selector(el: &ElementRef) -> String {
-    let mut segments = Vec::new();
-    let mut current = Some(*el);
-
-    while let Some(node) = current {
-        let tag = node.value().name().to_lowercase();
-
-        if tag == "body" || tag == "html" {
-            break;
-        }
-
-        // Count position among all sibling elements
-        let nth = count_element_position(&node);
-        segments.push(format!("{}:nth-child({})", tag, nth));
-
-        current = node.parent().and_then(ElementRef::wrap);
-    }
-
-    segments.reverse();
-    if segments.is_empty() {
-        el.value().name().to_string()
-    } else {
-        segments.join(" > ")
-    }
-}
-
-/// Count the 1-based position of this element among its parent's children.
-///
-/// This counts ALL element siblings (regardless of tag), matching CSS `:nth-child()` semantics.
-fn count_element_position(el: &ElementRef) -> usize {
-    if let Some(parent) = el.parent().and_then(ElementRef::wrap) {
-        let mut count = 0;
-
-        for child in parent.children() {
-            if ElementRef::wrap(child).is_some() {
-                count += 1;
-            }
-            if child == **el {
-                return count;
-            }
-        }
-    }
-    1
-}
-
 // ---------------------------------------------------------------------------
 // IFrame Selector Map
 // ---------------------------------------------------------------------------
@@ -1096,5 +886,53 @@ fn populate_iframe_map<'a>(frame: &'a FrameData, map: &mut HashMap<String, &'a F
 
     for child_frame in &frame.child_frames {
         populate_iframe_map(child_frame, map);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_css_hidden_display_none() {
+        assert!(is_css_hidden(Some("display:none")));
+        assert!(is_css_hidden(Some("display: none")));
+        assert!(is_css_hidden(Some("display: none; color: red")));
+        assert!(is_css_hidden(Some("color: red; display: none")));
+        assert!(is_css_hidden(Some("display:NONE")));
+    }
+
+    #[test]
+    fn test_css_hidden_visibility_hidden() {
+        assert!(is_css_hidden(Some("visibility:hidden")));
+        assert!(is_css_hidden(Some("visibility: hidden")));
+        assert!(is_css_hidden(Some("visibility: collapse")));
+    }
+
+    #[test]
+    fn test_css_hidden_opacity_zero() {
+        assert!(is_css_hidden(Some("opacity:0")));
+        assert!(is_css_hidden(Some("opacity: 0")));
+        assert!(is_css_hidden(Some("opacity: 0.0")));
+        assert!(is_css_hidden(Some("opacity:0.00")));
+        assert!(!is_css_hidden(Some("opacity: 0.1")));
+        assert!(!is_css_hidden(Some("opacity: 1")));
+    }
+
+    #[test]
+    fn test_css_hidden_clip_path() {
+        assert!(is_css_hidden(Some("clip-path: inset(100%)")));
+    }
+
+    #[test]
+    fn test_css_not_hidden() {
+        assert!(!is_css_hidden(None));
+        assert!(!is_css_hidden(Some("")));
+        assert!(!is_css_hidden(Some("color: red")));
+        assert!(!is_css_hidden(Some("display: block")));
+        assert!(!is_css_hidden(Some("display: flex")));
+        assert!(!is_css_hidden(Some("visibility: visible")));
+        assert!(!is_css_hidden(Some("opacity: 1")));
+        assert!(!is_css_hidden(Some("font-size: 14px")));
     }
 }

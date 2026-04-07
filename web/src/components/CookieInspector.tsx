@@ -9,8 +9,8 @@ export function CookieInspector() {
     try {
       const data = await api.listCookies();
       setCookies(data);
-    } catch {
-      // ignore
+    } catch (e) {
+      console.error('Failed to fetch cookies:', e);
     }
   };
 

@@ -1,9 +1,9 @@
+use std::{path::PathBuf, sync::Arc, time::Instant};
+
 use anyhow::Result;
-use std::path::PathBuf;
-use std::time::Instant;
+use pardus_core::BrowserConfig;
 
 use crate::OutputFormatArg;
-use pardus_core::BrowserConfig;
 
 pub async fn run_with_config(
     url: &str,
@@ -19,10 +19,7 @@ pub async fn run_with_config(
 ) -> Result<()> {
     let start = Instant::now();
 
-    println!(
-        "{:02}:{:02}  pardus-browser navigate {}",
-        0, 0, url
-    );
+    println!("{:02}:{:02}  pardus-browser navigate {}", 0, 0, url);
 
     let mut browser = pardus_core::Browser::new(config)?;
 
@@ -41,10 +38,12 @@ pub async fn run_with_config(
     );
 
     // Clone references before borrowing page
-    let net_log = browser.network_log.clone();
-    let http_client = browser.http_client.clone();
+    let net_log = browser.network_log().clone();
+    let http_client = browser.http_client().clone();
 
-    let page = browser.current_page().ok_or_else(|| anyhow::anyhow!("no page loaded"))?;
+    let page = browser
+        .current_page()
+        .ok_or_else(|| anyhow::anyhow!("no page loaded"))?;
 
     // Show redirect chain info
     if let Some(ref chain) = page.redirect_chain {
@@ -81,11 +80,17 @@ pub async fn run_with_config(
     if let Some(ref cov_path) = coverage_output {
         let css_sources = pardus_debug::coverage::extract_inline_styles(&page.html);
         let log = net_log.lock().unwrap_or_else(|e| e.into_inner());
-        let report = pardus_debug::coverage::CoverageReport::build(&page.url, &page.html, &css_sources, &log);
+        let report = pardus_debug::coverage::CoverageReport::build(
+            &page.url,
+            &page.html,
+            &css_sources,
+            &log,
+        );
         let json = serde_json::to_string_pretty(&report)?;
         std::fs::write(cov_path, json)?;
         println!(
-            "       Coverage report written to {} — {} CSS rules ({} matched, {} unmatched, {} untestable)",
+            "       Coverage report written to {} — {} CSS rules ({} matched, {} unmatched, {} \
+             untestable)",
             cov_path.display(),
             report.summary.total_css_rules,
             report.summary.matched_css_rules,
@@ -97,7 +102,7 @@ pub async fn run_with_config(
     let tree = page.semantic_tree();
 
     let tree = if interactive_only {
-        filter_interactive(&tree)
+        Arc::new(filter_interactive(&tree))
     } else {
         tree
     };
@@ -205,22 +210,16 @@ fn filter_interactive(tree: &pardus_core::SemanticTree) -> pardus_core::Semantic
 
     fn filter_node(node: &SemanticNode) -> Option<SemanticNode> {
         if node.is_interactive {
-            let filtered_children: Vec<SemanticNode> = node
-                .children
-                .iter()
-                .filter_map(filter_node)
-                .collect();
+            let filtered_children: Vec<SemanticNode> =
+                node.children.iter().filter_map(filter_node).collect();
             return Some(SemanticNode {
                 children: filtered_children,
                 ..node.clone()
             });
         }
 
-        let filtered_children: Vec<SemanticNode> = node
-            .children
-            .iter()
-            .filter_map(filter_node)
-            .collect();
+        let filtered_children: Vec<SemanticNode> =
+            node.children.iter().filter_map(filter_node).collect();
 
         if filtered_children.is_empty() {
             return None;

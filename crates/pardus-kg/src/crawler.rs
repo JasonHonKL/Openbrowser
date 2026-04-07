@@ -1,25 +1,27 @@
-use std::collections::{HashSet, VecDeque};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use futures::stream::{FuturesUnordered, StreamExt};
+use pardus_core::{
+    app::App, config::BrowserConfig, navigation::graph::NavigationGraph, page::Page,
+    page_analysis::PageAnalysis,
+};
 use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 use url::Url;
 
-use pardus_core::app::App;
-use pardus_core::config::BrowserConfig;
-use pardus_core::navigation::graph::NavigationGraph;
-use pardus_core::page::Page;
-use pardus_core::page_analysis::PageAnalysis;
-
-use crate::config::CrawlConfig;
-use crate::discovery::{self, DiscoveredTransition};
-use crate::fingerprint::{compute_fingerprint, discover_resources};
-use crate::graph::KnowledgeGraph;
-use crate::state::{ViewState, ViewStateId};
-use crate::transition::{Transition, TransitionOutcome, Trigger};
+use crate::{
+    config::CrawlConfig,
+    discovery::{self, DiscoveredTransition},
+    fingerprint::{compute_fingerprint, discover_resources},
+    graph::KnowledgeGraph,
+    state::{ViewState, ViewStateId},
+    transition::{Transition, TransitionOutcome, Trigger},
+};
 
 struct FrontierEntry {
     url: String,
@@ -44,7 +46,7 @@ pub async fn crawl_with_config(root_url: &str, config: &CrawlConfig) -> Result<K
 
     let mut browser_config = BrowserConfig::default();
     browser_config.proxy = config.proxy.clone();
-    let app = Arc::new(App::new(browser_config));
+    let app = Arc::new(App::new(browser_config)?);
     let mut graph = KnowledgeGraph::new(root_url, config.clone());
 
     let root_origin = Url::parse(root_url)
@@ -155,7 +157,8 @@ fn process_page(
 ) -> Option<ProcessedPage> {
     let analysis = PageAnalysis::build(&page.html, &page.url);
     let resource_urls = discover_resources(&page.html, &page.base_url);
-    let (fingerprint, state_id) = compute_fingerprint(&page.url, &analysis.semantic_tree, &resource_urls);
+    let (fingerprint, state_id) =
+        compute_fingerprint(&page.url, &analysis.semantic_tree, &resource_urls);
 
     if let Some(ref parent_id) = entry.parent_id {
         if let Some(ref trigger) = entry.trigger {
@@ -179,7 +182,10 @@ fn process_page(
     }
 
     let (semantic_tree, navigation_graph) = if config.store_full_trees {
-        (Some(analysis.semantic_tree), Some(analysis.navigation_graph.clone()))
+        (
+            Some(analysis.semantic_tree),
+            Some(analysis.navigation_graph.clone()),
+        )
     } else {
         (None, None)
     };
@@ -252,7 +258,9 @@ fn discover_transitions_for_page(
     let mut all = Vec::new();
 
     all.extend(discovery::discover_link_transitions(
-        nav_graph, root_origin, state_id,
+        nav_graph,
+        root_origin,
+        state_id,
     ));
 
     if config.discover_hash_nav {

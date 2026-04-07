@@ -39,6 +39,7 @@ export class Agent {
   private isRunning = false;
   private toolConfig: AgentOptions['toolConfig'];
   private contextConfig: ContextConfig;
+  private abortController: AbortController | null = null;
 
   constructor(browserManager: BrowserManager, options: AgentOptions) {
     this.browserManager = browserManager;
@@ -93,6 +94,10 @@ export class Agent {
 
       // Keep looping while the LLM wants to make tool calls
       while (rounds < this.maxRounds) {
+        if (this.abortController?.signal.aborted) {
+          return '[Agent stopped by user]';
+        }
+
         rounds++;
 
         // Call LLM
@@ -162,6 +167,7 @@ export class Agent {
       return '';
     } finally {
       this.isRunning = false;
+      this.abortController = null;
     }
   }
 
@@ -248,6 +254,7 @@ export class Agent {
     }
 
     this.isRunning = true;
+    this.abortController = new AbortController();
 
     try {
       this.messages.push({ role: 'user', content: userMessage });
@@ -255,6 +262,10 @@ export class Agent {
       let rounds = 0;
 
       while (rounds < this.maxRounds) {
+        if (this.abortController.signal.aborted) {
+          return '[Agent stopped by user]';
+        }
+
         rounds++;
 
         const result = await this.llm.streamChat(this.messages);
@@ -323,6 +334,7 @@ export class Agent {
       return limitMsg;
     } finally {
       this.isRunning = false;
+      this.abortController = null;
     }
   }
 
@@ -360,5 +372,11 @@ export class Agent {
    */
   getToolConfig(): AgentOptions['toolConfig'] {
     return { ...this.toolConfig };
+  }
+
+  stop(): void {
+    if (this.abortController) {
+      this.abortController.abort();
+    }
   }
 }

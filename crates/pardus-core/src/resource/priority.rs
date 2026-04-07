@@ -1,12 +1,11 @@
 //! Priority queue for resource scheduling
 
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::{cmp::Ordering, collections::BinaryHeap};
 
 /// Task with priority for the queue
 #[derive(Debug, Clone)]
 pub struct PriorityTask<T> {
-    priority: u8, // Lower = higher priority
+    priority: u8,  // Lower = higher priority
     sequence: u64, // FIFO for equal priorities
     task: T,
 }
@@ -31,15 +30,15 @@ impl<T> PartialEq for PriorityTask<T> {
 impl<T> Eq for PriorityTask<T> {}
 
 impl<T> PartialOrd for PriorityTask<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
 }
 
 impl<T> Ord for PriorityTask<T> {
     fn cmp(&self, other: &Self) -> Ordering {
         // Reverse ordering: lower priority value = higher actual priority
-        other.priority.cmp(&self.priority)
+        other
+            .priority
+            .cmp(&self.priority)
             .then_with(|| other.sequence.cmp(&self.sequence))
     }
 }
@@ -67,34 +66,23 @@ impl<T> PriorityQueue<T> {
     }
 
     /// Push task with priority (0 = highest priority)
-    pub fn push(&mut self,
-        priority: u8,
-        task: T,
-    ) {
+    pub fn push(&mut self, priority: u8, task: T) {
         self.sequence += 1;
         let pt = PriorityTask::new(priority, self.sequence, task);
         self.heap.push(pt);
     }
 
     /// Pop highest priority task
-    pub fn pop(&mut self) -> Option<(u8, T)> {
-        self.heap.pop().map(|pt| (pt.priority, pt.task))
-    }
+    pub fn pop(&mut self) -> Option<(u8, T)> { self.heap.pop().map(|pt| (pt.priority, pt.task)) }
 
     /// Peek at highest priority without removing
-    pub fn peek(&self) -> Option<(&u8, &T)> {
-        self.heap.peek().map(|pt| (&pt.priority, &pt.task))
-    }
+    pub fn peek(&self) -> Option<(&u8, &T)> { self.heap.peek().map(|pt| (&pt.priority, &pt.task)) }
 
     /// Number of tasks
-    pub fn len(&self) -> usize {
-        self.heap.len()
-    }
+    pub fn len(&self) -> usize { self.heap.len() }
 
     /// Is empty
-    pub fn is_empty(&self) -> bool {
-        self.heap.is_empty()
-    }
+    pub fn is_empty(&self) -> bool { self.heap.is_empty() }
 
     /// Drain all tasks
     pub fn drain(self) -> impl Iterator<Item = (u8, T)> {
@@ -116,16 +104,14 @@ impl<T> PriorityQueue<T> {
 }
 
 impl<T> Default for PriorityQueue<T> {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 /// Multi-level priority queue
 /// Different queues for different priority levels
 #[derive(Debug)]
 pub struct MultiLevelQueue<T> {
-    critical: Vec<T>,    // Priority 0-31
+    critical: Vec<T>,   // Priority 0-31
     high: Vec<T>,       // Priority 32-95
     normal: Vec<T>,     // Priority 96-159
     low: Vec<T>,        // Priority 160-223
@@ -155,7 +141,8 @@ impl<T> MultiLevelQueue<T> {
 
     /// Get all tasks in priority order
     pub fn all_tasks(self) -> impl Iterator<Item = T> {
-        self.critical.into_iter()
+        self.critical
+            .into_iter()
             .chain(self.high)
             .chain(self.normal)
             .chain(self.low)
@@ -164,9 +151,7 @@ impl<T> MultiLevelQueue<T> {
 }
 
 impl<T> Default for MultiLevelQueue<T> {
-    fn default() -> Self {
-        Self::new()
-    }
+    fn default() -> Self { Self::new() }
 }
 
 #[cfg(test)]

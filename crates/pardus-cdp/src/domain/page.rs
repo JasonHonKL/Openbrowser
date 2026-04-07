@@ -1,10 +1,14 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::domain::{method_not_found, CdpDomainHandler, DomainContext, HandleResult};
-use crate::error::{CdpError, CdpErrorBody};
-use crate::protocol::message::{CdpErrorResponse, CdpEvent};
-use crate::protocol::target::CdpSession;
+use crate::{
+    domain::{CdpDomainHandler, DomainContext, HandleResult, method_not_found},
+    error::{CdpError, CdpErrorBody},
+    protocol::{
+        message::{CdpErrorResponse, CdpEvent},
+        target::CdpSession,
+    },
+};
 
 pub struct PageDomain;
 
@@ -38,9 +42,7 @@ fn resolve_target_id(session: &CdpSession) -> &str {
 
 #[async_trait(?Send)]
 impl CdpDomainHandler for PageDomain {
-    fn domain_name(&self) -> &'static str {
-        "Page"
-    }
+    fn domain_name(&self) -> &'static str { "Page" }
 
     async fn handle(
         &self,
@@ -69,7 +71,10 @@ impl CdpDomainHandler for PageDomain {
 
                 match ctx.navigate(&target_id, url).await {
                     Ok(()) => {
-                        let final_url = ctx.get_url(&target_id).await.unwrap_or_else(|| url.to_string());
+                        let final_url = ctx
+                            .get_url(&target_id)
+                            .await
+                            .unwrap_or_else(|| url.to_string());
                         let title = ctx.get_title(&target_id).await;
 
                         let _ = ctx.event_bus.send(CdpEvent {
@@ -118,7 +123,10 @@ impl CdpDomainHandler for PageDomain {
                 let target_id = resolve_target_id(session).to_string();
                 let url = {
                     let targets = ctx.targets.lock().await;
-                    targets.get(&target_id).map(|t| t.url.clone()).unwrap_or_else(|| "about:blank".to_string())
+                    targets
+                        .get(&target_id)
+                        .map(|t| t.url.clone())
+                        .unwrap_or_else(|| "about:blank".to_string())
                 };
                 match ctx.navigate(&target_id, &url).await {
                     Ok(()) => {
@@ -160,8 +168,16 @@ impl CdpDomainHandler for PageDomain {
                 let targets = ctx.targets.lock().await;
                 let entry = targets.get(&target_id);
                 let (frame_id, url, _title) = entry
-                    .map(|t| (target_id.clone(), t.url.clone(), t.title.clone().unwrap_or_default()))
-                    .unwrap_or_else(|| ("main".to_string(), "about:blank".to_string(), String::new()));
+                    .map(|t| {
+                        (
+                            target_id.clone(),
+                            t.url.clone(),
+                            t.title.clone().unwrap_or_default(),
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        ("main".to_string(), "about:blank".to_string(), String::new())
+                    });
                 let frame_tree_json = entry.and_then(|e| e.frame_tree_json.clone());
 
                 let child_frames = if let Some(json_str) = &frame_tree_json {
@@ -187,7 +203,8 @@ impl CdpDomainHandler for PageDomain {
             "addScriptToEvaluateOnNewDocument" => {
                 let _source = params["source"].as_str().unwrap_or("");
                 let world_name = params["worldName"].as_str().unwrap_or("");
-                let include_command_line_api = params["includeCommandLineAPI"].as_bool().unwrap_or(false);
+                let include_command_line_api =
+                    params["includeCommandLineAPI"].as_bool().unwrap_or(false);
                 let _ = (world_name, include_command_line_api);
 
                 HandleResult::Success(serde_json::json!({
@@ -233,9 +250,16 @@ impl CdpDomainHandler for PageDomain {
                 let _frame_id = params["frameId"].as_str().unwrap_or("");
                 let url = params["url"].as_str().unwrap_or("");
 
-                let html = ctx.get_html(resolve_target_id(session)).await
+                let html = ctx
+                    .get_html(resolve_target_id(session))
+                    .await
                     .unwrap_or_default();
-                let content = if url == ctx.get_url(resolve_target_id(session)).await.unwrap_or_default() {
+                let content = if url
+                    == ctx
+                        .get_url(resolve_target_id(session))
+                        .await
+                        .unwrap_or_default()
+                {
                     html
                 } else {
                     String::new()
@@ -258,15 +282,14 @@ impl CdpDomainHandler for PageDomain {
                     let format_str = params["format"].as_str().unwrap_or("png");
                     let quality = params["quality"].as_u64().map(|q| q as u8);
                     let has_clip = !params["clip"].is_null();
-                    let full_page = params["captureBeyondViewport"].as_bool()
+                    let full_page = params["captureBeyondViewport"]
+                        .as_bool()
                         .unwrap_or(has_clip);
 
                     let screenshot_format = match format_str {
-                        "jpeg" => {
-                            pardus_core::screenshot::ScreenshotFormat::Jpeg {
-                                quality: quality.unwrap_or(85),
-                            }
-                        }
+                        "jpeg" => pardus_core::screenshot::ScreenshotFormat::Jpeg {
+                            quality: quality.unwrap_or(85),
+                        },
                         _ => pardus_core::screenshot::ScreenshotFormat::Png,
                     };
 
@@ -299,22 +322,25 @@ impl CdpDomainHandler for PageDomain {
                         id: 0,
                         error: CdpErrorBody {
                             code: crate::error::SERVER_ERROR,
-                            message: "Screenshots not supported. PardusBrowser is a semantic-only browser (no rendering engine). Rebuild with --features screenshot to enable.".to_string(),
+                            message: "Screenshots not supported. PardusBrowser is a semantic-only \
+                                      browser (no rendering engine). Rebuild with --features \
+                                      screenshot to enable."
+                                .to_string(),
                         },
                         session_id: None,
                     })
                 }
             }
-            "printToPDF" => {
-                HandleResult::Error(CdpErrorResponse {
-                    id: 0,
-                    error: CdpErrorBody {
-                        code: crate::error::SERVER_ERROR,
-                        message: "PDF generation not supported. PardusBrowser is a semantic-only browser (no rendering engine).".to_string(),
-                    },
-                    session_id: None,
-                })
-            }
+            "printToPDF" => HandleResult::Error(CdpErrorResponse {
+                id: 0,
+                error: CdpErrorBody {
+                    code: crate::error::SERVER_ERROR,
+                    message: "PDF generation not supported. PardusBrowser is a semantic-only \
+                              browser (no rendering engine)."
+                        .to_string(),
+                },
+                session_id: None,
+            }),
             "startScreencast" => HandleResult::Ack,
             "stopScreencast" => HandleResult::Ack,
             "screencastFrameAck" => HandleResult::Ack,
@@ -323,23 +349,21 @@ impl CdpDomainHandler for PageDomain {
                 let _behavior = params["behavior"].as_str().unwrap_or("deny");
                 HandleResult::Ack
             }
-            "getFileChooser" => {
-                HandleResult::Error(CdpErrorResponse {
-                    id: 0,
-                    error: CdpErrorBody {
-                        code: crate::error::SERVER_ERROR,
-                        message: "File chooser not supported".to_string(),
-                    },
-                    session_id: None,
-                })
+            "getFileChooser" => HandleResult::Error(CdpErrorResponse {
+                id: 0,
+                error: CdpErrorBody {
+                    code: crate::error::SERVER_ERROR,
+                    message: "File chooser not supported".to_string(),
+                },
+                session_id: None,
+            }),
+            "getInstallabilityError" => {
+                HandleResult::Success(serde_json::json!({ "installabilityErrors": [] }))
             }
-            "getInstallabilityError" => HandleResult::Success(serde_json::json!({ "installabilityErrors": [] })),
-            "getAppManifest" => {
-                HandleResult::Success(serde_json::json!({
-                    "url": Value::Null,
-                    "errors": [],
-                }))
-            }
+            "getAppManifest" => HandleResult::Success(serde_json::json!({
+                "url": Value::Null,
+                "errors": [],
+            })),
             "getOriginTrialInfo" => HandleResult::Success(serde_json::json!({ "origins": [] })),
             "setInterceptFileChooserDialog" => HandleResult::Ack,
             "toggleInterceptFileChooserDialog" => HandleResult::Ack,
@@ -351,7 +375,8 @@ impl CdpDomainHandler for PageDomain {
             "createIsolatedWorld" => {
                 let frame_id = params["frameId"].as_str().unwrap_or("main");
                 let _world_name = params["worldName"].as_str().unwrap_or("");
-                let _grant_univeral_access = params["grantUniveralAccess"].as_bool().unwrap_or(false);
+                let _grant_universal_access =
+                    params["grantUniversalAccess"].as_bool().unwrap_or(false);
                 let ctx_id = session.create_execution_context(frame_id.to_string(), "".to_string());
                 HandleResult::Success(serde_json::json!({
                     "executionContextId": ctx_id,
@@ -364,13 +389,11 @@ impl CdpDomainHandler for PageDomain {
                 let _height = params["height"].as_u64().unwrap_or(720);
                 HandleResult::Ack
             }
-            "getFrameResource" => {
-                HandleResult::Success(serde_json::json!({
-                    "content": "",
-                    "mimeType": "",
-                    "statusCode": 200,
-                }))
-            }
+            "getFrameResource" => HandleResult::Success(serde_json::json!({
+                "content": "",
+                "mimeType": "",
+                "statusCode": 200,
+            })),
             "getFrameResourceTree" => {
                 let target_id = resolve_target_id(session).to_string();
                 let targets = ctx.targets.lock().await;
@@ -394,13 +417,13 @@ impl CdpDomainHandler for PageDomain {
                     }
                 }))
             }
-            "searchInResource" => {
-                HandleResult::Success(serde_json::json!({ "result": [] }))
-            }
+            "searchInResource" => HandleResult::Success(serde_json::json!({ "result": [] })),
             "setWebLifecycleState" => HandleResult::Ack,
             "enableLifecycleEvents" => HandleResult::Ack,
             "setPrerenderingAllowed" => HandleResult::Ack,
-            "getBackForwardCache" => HandleResult::Success(serde_json::json!({ "prerenderInfo": [] })),
+            "getBackForwardCache" => {
+                HandleResult::Success(serde_json::json!({ "prerenderInfo": [] }))
+            }
             "registerNonTrackedLoadEventFired" => HandleResult::Ack,
             "attemptNavigation" => HandleResult::Ack,
             _ => method_not_found("Page", method),
@@ -411,8 +434,12 @@ impl CdpDomainHandler for PageDomain {
 fn frame_data_to_cdp(frame: &serde_json::Value) -> serde_json::Value {
     let id = frame["id"].as_str().unwrap_or_default();
     let url = frame["url"].as_str().unwrap_or_default();
-    let has_error = frame.get("load_error").and_then(|e| e.as_str()).map_or(false, |s| !s.is_empty());
-    let child_frames: Vec<Value> = frame.get("child_frames")
+    let has_error = frame
+        .get("load_error")
+        .and_then(|e| e.as_str())
+        .map_or(false, |s| !s.is_empty());
+    let child_frames: Vec<Value> = frame
+        .get("child_frames")
         .and_then(|c| c.as_array())
         .map(|arr| arr.iter().map(|f| frame_data_to_cdp(f)).collect())
         .unwrap_or_default();

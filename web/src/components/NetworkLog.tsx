@@ -9,8 +9,8 @@ export function NetworkLog() {
     try {
       const data = await api.networkRequests();
       setRecords(data);
-    } catch {
-      // ignore
+    } catch (e) {
+      console.error('Failed to fetch network requests:', e);
     }
   };
 
